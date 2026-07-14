@@ -4,6 +4,7 @@ This note documents how Nexus decides whether Appliance is busy and how the UI s
 
 ## Source Of Truth
 
+- `GET /api/system/readiness` is a lightweight startup probe. It only checks backend/Appliance availability and never starts synchronization.
 - `GET /api/sync/status`
 - `GET /api/analysis/status`
 
@@ -34,3 +35,9 @@ Both responses now expose:
 - Show `Klar` when neither job is active.
 - Show `Forrige sync feilet` only for a real sync failure, not for a stale lock message.
 - Never surface internal lock paths or SQLite filenames in the dashboard.
+
+## Startup Flow
+
+The frontend enters `starting` and then `connecting` while it probes readiness and both status endpoints. It retries at 0, 2, 4, 6, 8, and 10 seconds. HTTP 500, timeout, connection errors, unavailable Appliance responses, and empty status payloads are temporary startup conditions for this window.
+
+The initialization screen closes as soon as a valid status round succeeds. A startup failure is shown only after the retry window expires or when the backend returns an explicit permanent code such as `graph_auth_failed`, `sync_failed`, `backend_configuration_error`, or `appliance_unreachable`. Raw backend details stay in diagnostics/logs; UI copy is mapped to user-friendly Norwegian messages.

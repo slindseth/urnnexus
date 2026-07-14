@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppLayout } from "../components/Layout";
+import { DashboardPage } from "../pages/DashboardPage";
 import { APPLIANCE_BUSY_MESSAGE } from "../lib/applianceStatus";
 import * as api from "../lib/api";
 import { AppDataProvider } from "./AppDataContext";
-import type { AnalysisStatusResponse, HealthResponse, ProjectListResponse, SyncRunResponse, SyncStatusResponse } from "../types";
+import type { AnalysisStatusResponse, HealthResponse, ProjectListResponse, ReadinessResponse, SyncRunResponse, SyncStatusResponse } from "../types";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -76,13 +77,18 @@ function makeIdleAnalysisStatus(): AnalysisStatusResponse {
   };
 }
 
-function renderApp(analysisStatus: AnalysisStatusResponse = makeIdleAnalysisStatus()) {
+function makeReadyResponse(): ReadinessResponse {
+  return { ready: true, backend: true, appliance: true, graph: true, status: "ready" };
+}
+
+function renderApp(analysisStatus: AnalysisStatusResponse = makeIdleAnalysisStatus(), routeContent: ReactNode = <div>Body</div>) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   mountedRoot = root;
 
   vi.spyOn(api, "getAnalysisStatus").mockResolvedValue(analysisStatus);
+  vi.spyOn(api, "getSystemReadiness").mockResolvedValue(makeReadyResponse());
 
   act(() => {
     root.render(
@@ -90,7 +96,7 @@ function renderApp(analysisStatus: AnalysisStatusResponse = makeIdleAnalysisStat
         <AppDataProvider>
           <Routes>
             <Route element={<AppLayout />}>
-              <Route index element={<div>Body</div>} />
+              <Route index element={routeContent} />
             </Route>
           </Routes>
         </AppDataProvider>
@@ -174,6 +180,7 @@ function makeFailedSyncStatus(): SyncStatusResponse {
     files_changed: 0,
     reports_found: 0,
     status: "failed",
+    error_code: "sync_failed",
   };
 }
 
@@ -289,7 +296,7 @@ describe("AppDataProvider daily sync", () => {
     expect(getHealthSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("switches to the timeout copy and lets the user continue if sync takes too long", async () => {
+  it("switches to a recoverable warning with retry/details actions if sync takes too long", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-12T09:30:00+02:00"));
 
@@ -319,15 +326,16 @@ describe("AppDataProvider daily sync", () => {
     });
 
     expect(container.textContent).toContain("Synkronisering tar lengre tid enn forventet. Du kan fortsette med sist synkroniserte data.");
-    expect(container.textContent).toContain("Fortsett");
-    expect(container.textContent).toContain("Se status");
+    expect(container.textContent).toContain("Prøv igjen");
+    expect(container.textContent).toContain("Se detaljer");
+    expect(container.textContent).not.toContain("Fortsett");
 
     await act(async () => {
-      const continueButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Fortsett");
-      if (!continueButton) {
-        throw new Error("Could not find Fortsett button");
+      const detailsButton = Array.from(container.querySelectorAll("a, button")).find((button) => button.textContent?.trim() === "Se detaljer");
+      if (!detailsButton) {
+        throw new Error("Could not find Se detaljer button");
       }
-      continueButton.click();
+      (detailsButton as HTMLElement).click();
       await Promise.resolve();
     });
 
@@ -336,7 +344,7 @@ describe("AppDataProvider daily sync", () => {
     expect(getHealthSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("shows an error message and lets the user continue if sync fails", async () => {
+  it("shows the fatal sync modal only for an explicit classified sync failure", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-12T10:00:00+02:00"));
 
@@ -364,21 +372,25 @@ describe("AppDataProvider daily sync", () => {
     });
 
     expect(container.textContent).toContain("OneDrive-synkroniseringen feilet.");
-    expect(container.textContent).toContain("Fortsett");
-    expect(getSyncStatusSpy).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Synkroniseringen kunne ikke fullføres.");
+    expect(container.textContent).toContain("Prøv synkronisering på nytt");
+    expect(container.textContent).toContain("Gå til Aktivitet");
+    expect(container.textContent).not.toContain("Fortsett");
+    expect(container.textContent.match(/OneDrive-synkroniseringen feilet\./g)).toHaveLength(1);
+    expect(getSyncStatusSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(getProjectsSpy).toHaveBeenCalledTimes(1);
     expect(getHealthSpy).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      const continueButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Fortsett");
-      if (!continueButton) {
-        throw new Error("Could not find Fortsett button");
+      const retryButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Prøv synkronisering på nytt");
+      if (!retryButton) {
+        throw new Error("Could not find sync retry button");
       }
-      continueButton.click();
+      retryButton.click();
       await Promise.resolve();
     });
 
-    expect(container.textContent).not.toContain("OneDrive-synkroniseringen feilet.");
+    expect(container.textContent).toContain("Velkommen til Urban Reuse Norway's NEXUS verktøy");
   });
 
   it("clears stale lock failures from storage and restarts sync", async () => {
@@ -422,6 +434,38 @@ describe("AppDataProvider daily sync", () => {
     });
     expect(getProjectsSpy).toHaveBeenCalledTimes(1);
     expect(getHealthSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a persisted generic failed record instead of resurrecting the old failure modal", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T11:30:00+02:00"));
+    window.localStorage.setItem(
+      "urn-nexus:daily-onedrive-sync",
+      JSON.stringify({
+        date: getLocalDayKey(),
+        started_at: "2026-06-12T11:00:00+02:00",
+        completed_at: "2026-06-12T11:01:00+02:00",
+        status: "failed",
+        last_error: "Internal server error",
+      }),
+    );
+
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    vi.spyOn(api, "getSyncStatus").mockResolvedValue(makeIdleSyncStatus());
+    const runSyncSpy = vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+
+    const { container } = renderApp();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(runSyncSpy).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Velkommen til Urban Reuse Norway's NEXUS verktøy");
+    expect(container.textContent).not.toContain("OneDrive-synkroniseringen feilet.");
+    expect(container.textContent).not.toContain("Internal server error");
   });
 
   it("shows the busy modal when analysis is already running", async () => {
@@ -483,5 +527,130 @@ describe("AppDataProvider daily sync", () => {
     expect(getSyncStatusSpy).toHaveBeenCalledTimes(1);
     expect(getProjectsSpy).toHaveBeenCalledTimes(1);
     expect(getHealthSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps startup visible through temporary 500 responses and recovers on a later status response", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T12:00:00+02:00"));
+
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    const getSyncStatusSpy = vi
+      .spyOn(api, "getSyncStatus")
+      .mockRejectedValueOnce(new api.ApiRequestError(500, "Internal server error", "internal_error"))
+      .mockRejectedValueOnce(new api.ApiRequestError(500, "Internal server error", "internal_error"))
+      .mockResolvedValue(makeIdleSyncStatus());
+    const runSyncSpy = vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+
+    const { container } = renderApp();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Starter NEXUS");
+    expect(container.textContent).not.toContain("Internal server error");
+
+    await act(async () => {
+      vi.advanceTimersByTime(4000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getSyncStatusSpy).toHaveBeenCalledTimes(3);
+    expect(runSyncSpy).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("NEXUS kunne ikke starte");
+    expect(container.textContent).not.toContain("Internal server error");
+  });
+
+  it("reproduces the dashboard placeholder scenario without opening a OneDrive failure modal", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T12:15:00+02:00"));
+    window.localStorage.setItem(
+      "urn-nexus:daily-onedrive-sync",
+      JSON.stringify({
+        date: "2026-06-12",
+        started_at: "2026-06-12T08:00:00+02:00",
+        completed_at: "2026-06-12T08:03:00+02:00",
+        status: "completed",
+        last_error: null,
+      }),
+    );
+
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    const getSyncStatusSpy = vi
+      .spyOn(api, "getSyncStatus")
+      .mockRejectedValueOnce(new api.ApiRequestError(500, "Internal server error", "internal_error"))
+      .mockResolvedValue(makeIdleSyncStatus());
+
+    const { container } = renderApp(makeIdleAnalysisStatus(), <DashboardPage />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Starter NEXUS");
+    expect(container.textContent).toContain("Laster prosjekter …");
+    expect(container.textContent).toContain("Ukjent");
+    expect(container.textContent).toContain("Ingen analyse");
+    expect(container.textContent).toContain("Ingen rapport");
+    expect(container.textContent).not.toContain("OneDrive-synkroniseringen feilet.");
+    expect(container.textContent).not.toContain("Internal server error");
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getSyncStatusSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(container.textContent).not.toContain("Starter NEXUS");
+    expect(container.textContent).not.toContain("OneDrive-synkroniseringen feilet.");
+    expect(container.textContent.match(/OneDrive-synkroniseringen feilet\./g)).toBeNull();
+  });
+
+  it("shows a friendly startup failure only after the retry window expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T12:30:00+02:00"));
+
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    vi.spyOn(api, "getSyncStatus").mockRejectedValue(new api.ApiRequestError(500, "Internal server error", "internal_error"));
+    const runSyncSpy = vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+
+    const { container } = renderApp();
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("NEXUS kunne ikke starte");
+    expect(container.textContent).toContain("Status kunne ikke hentes.");
+    expect(container.textContent).not.toContain("Internal server error");
+    expect(runSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails immediately for an explicit Graph authentication failure", async () => {
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    vi.spyOn(api, "getSyncStatus").mockResolvedValue({ ...makeIdleSyncStatus(), error_code: "graph_auth_failed" });
+    const runSyncSpy = vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+
+    const { container } = renderApp();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("NEXUS kunne ikke starte");
+    expect(container.textContent).toContain("OneDrive krever ny innlogging.");
+    expect(runSyncSpy).not.toHaveBeenCalled();
   });
 });

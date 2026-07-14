@@ -1,4 +1,5 @@
 import { useEffect, useState, type DependencyList } from "react";
+import { getUserFacingErrorMessage } from "./api";
 
 interface ResourceState<T> {
   data: T | null;
@@ -28,7 +29,7 @@ export function useResource<T>(loader: () => Promise<T>, dependencies: Dependenc
       .catch((reason: unknown) => {
         if (active) {
           setData(null);
-          setError(reason instanceof Error ? reason.message : "Kunne ikke laste inn data.");
+          setError(getUserFacingErrorMessage(reason, "Kunne ikke laste inn data."));
         }
       })
       .finally(() => {

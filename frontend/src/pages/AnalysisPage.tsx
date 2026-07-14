@@ -4,7 +4,7 @@ import { ErrorState } from "../components/ErrorState";
 import { ProjectTable } from "../components/ProjectTable";
 import { StatusPill } from "../components/StatusPill";
 import { useAppData } from "../context/AppDataContext";
-import { ApiRequestError, formatDateTime, getAnalysisStatus, runAnalysis } from "../lib/api";
+import { ApiRequestError, formatDateTime, getAnalysisStatus, getUserFacingErrorMessage, runAnalysis } from "../lib/api";
 import {
   ANALYSIS_STARTING_LABEL,
   ANALYSIS_STARTUP_GRACE_MS,
@@ -266,7 +266,7 @@ export function AnalysisPage() {
         console.error("[AnalysisPage] getAnalysisStatus failed", error);
         const startup = analysisStartupRef.current;
         if (!startup || startup.graceExpired) {
-          setAnalysisStatusError(error instanceof Error ? error.message : "Kunne ikke lese analyse-status.");
+          setAnalysisStatusError(getUserFacingErrorMessage(error, "Status kunne ikke hentes."));
         }
         timer = window.setTimeout(pollAnalysisStatus, startup ? 1000 : 30000);
       } finally {
@@ -386,9 +386,9 @@ export function AnalysisPage() {
         analysisStartupTimerRef.current = undefined;
       }
       if (error instanceof ApiRequestError && error.status === 503) {
-        setAnalysisMessage(error.message === APPLIANCE_BUSY_MESSAGE ? APPLIANCE_BUSY_MESSAGE : error.message);
+        setAnalysisMessage(error.message === APPLIANCE_BUSY_MESSAGE ? APPLIANCE_BUSY_MESSAGE : getUserFacingErrorMessage(error, "Kunne ikke starte analyse."));
       } else {
-        setAnalysisMessage(error instanceof Error ? error.message : "Kunne ikke starte analyse.");
+        setAnalysisMessage(getUserFacingErrorMessage(error, "Kunne ikke starte analyse."));
       }
     } finally {
       setIsSubmitting(false);

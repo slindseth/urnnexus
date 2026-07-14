@@ -562,6 +562,38 @@ def test_health_reports_appliance_availability_and_version() -> None:
     assert payload["appliance_root"].endswith("/home/anbudklient/appliance")
 
 
+def test_system_readiness_is_lightweight_and_does_not_start_sync(tmp_path: Path) -> None:
+    appliance_root = tmp_path / "appliance"
+    appliance_root.mkdir()
+    app = create_app(ApplianceSettings(appliance_root=appliance_root))
+    client = _AsyncAppClient(app)
+
+    response = client.get("/api/system/readiness")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": True,
+        "backend": True,
+        "appliance": True,
+        "graph": True,
+        "status": "ready",
+        "code": None,
+        "detail": None,
+    }
+    assert app.state.appliance_service._sync_state.status == "idle"
+    assert app.state.appliance_service._analysis_state.status == "idle"
+
+
+def test_system_readiness_reports_starting_when_appliance_root_is_not_available(tmp_path: Path) -> None:
+    app = create_app(ApplianceSettings(appliance_root=tmp_path / "not-started"))
+    response = _AsyncAppClient(app).get("/api/system/readiness")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["status"] == "starting"
+    assert response.json()["code"] == "appliance_starting"
+
+
 def test_projects_endpoint_lists_discovered_projects() -> None:
     client = _client()
 

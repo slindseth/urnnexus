@@ -94,6 +94,28 @@ export interface HealthResponse {
   warnings_last_24h: number;
 }
 
+export type StartupState = "starting" | "connecting" | "ready" | "failed";
+
+export type ErrorCategory =
+  | "Startup"
+  | "Backend"
+  | "Appliance"
+  | "OneDrive"
+  | "Graph Authentication"
+  | "Synchronization"
+  | "Analysis"
+  | "Unknown";
+
+export interface ReadinessResponse {
+  ready: boolean;
+  backend: boolean;
+  appliance: boolean;
+  graph: boolean;
+  status: string;
+  code?: string | null;
+  detail?: string | null;
+}
+
 export interface ProjectSummary {
   project_name: string;
   display_name: string;
@@ -317,6 +339,7 @@ export interface SyncStatusResponse {
   last_started_at: string | null;
   last_completed_at: string | null;
   last_error: string | null;
+  error_code?: string | null;
   projects_synced: number;
   files_changed: number;
   reports_found: number;
@@ -357,6 +380,7 @@ export interface AnalysisStatusResponse {
   auth_status: AnalysisAuthStatus;
   last_error: string | null;
   last_start_error: string | null;
+  error_code?: string | null;
   projects_synced: number;
   files_changed: number;
   reports_found: number;

@@ -4,7 +4,7 @@ import { AppHeader } from "../components/Layout";
 import { ErrorState } from "../components/ErrorState";
 import { ProjectTable } from "../components/ProjectTable";
 import { useAppData } from "../context/AppDataContext";
-import { ApiRequestError, createProject, deleteProject, projectUrl } from "../lib/api";
+import { ApiRequestError, createProject, deleteProject, getUserFacingErrorMessage, projectUrl } from "../lib/api";
 import type { ProjectViewModel } from "../lib/projects";
 
 export function ProjectsPage() {
@@ -48,7 +48,7 @@ export function ProjectsPage() {
       refresh();
       navigate(projectUrl(response.project_name));
     } catch (error) {
-      setCreateMessage(error instanceof Error ? error.message : "Kunne ikke opprette prosjektet.");
+      setCreateMessage(getUserFacingErrorMessage(error, "Kunne ikke opprette prosjektet."));
     } finally {
       setIsCreating(false);
     }
@@ -76,7 +76,7 @@ export function ProjectsPage() {
         void refresh();
         return;
       }
-      setDeleteMessage(error instanceof Error ? error.message : "Kunne ikke slette prosjektet i OneDrive.");
+      setDeleteMessage(getUserFacingErrorMessage(error, "Kunne ikke slette prosjektet i OneDrive."));
     } finally {
       setIsDeleting(false);
     }

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode, type SVGProps } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
-import { useAppData } from "../context/AppDataContext";
+import { useAppData, type DailySyncState } from "../context/AppDataContext";
 import { StatusPill } from "./StatusPill";
 
 export const THEME_STORAGE_KEY = "urn-nexus:theme";
@@ -87,7 +87,7 @@ function useThemePreference() {
 }
 
 export function AppLayout() {
-  const { dailySync, dismissDailySync } = useAppData();
+  const { dailySync, dismissDailySync, retryDailySync, startupState, startupError, retryStartup } = useAppData();
   const { theme, toggleTheme } = useThemePreference();
 
   return (
@@ -101,7 +101,54 @@ export function AppLayout() {
           <Outlet />
         </div>
       </main>
-      {dailySync ? <DailySyncOverlay title={dailySync.title} message={dailySync.message} detail={dailySync.detail} onContinue={dismissDailySync ?? (() => undefined)} /> : null}
+      {startupState && startupState !== "ready" ? <StartupOverlay state={startupState} error={startupError ?? null} onRetry={retryStartup ?? (() => undefined)} /> : null}
+      {dailySync && startupState === "ready" ? <DailySyncOverlay state={dailySync} onDismiss={dismissDailySync ?? (() => undefined)} onRetry={retryDailySync ?? (() => undefined)} /> : null}
+    </div>
+  );
+}
+
+function StartupOverlay({ state, error, onRetry }: { state: "starting" | "connecting" | "failed"; error: string | null; onRetry: () => void }) {
+  if (state === "failed") {
+    return <StartupFailureOverlay error={error} onRetry={onRetry} />;
+  }
+
+  return (
+    <div className="modal-backdrop modal-backdrop--sync" role="status" aria-live="polite" aria-busy="true">
+      <section className="modal-panel modal-panel--sync" aria-labelledby="startup-title" aria-describedby="startup-description">
+        <div className="sync-loader" aria-hidden="true" />
+        <div className="section-kicker">NEXUS</div>
+        <h2 className="section-title" id="startup-title">
+          Starter NEXUS
+        </h2>
+        <p className="modal-copy" id="startup-description">
+          Kobler til tjenestene og henter systemstatus.
+        </p>
+        <div className="sync-loader__detail">Dette tar vanligvis noen sekunder.</div>
+      </section>
+    </div>
+  );
+}
+
+function StartupFailureOverlay({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  return (
+    <div className="modal-backdrop modal-backdrop--sync" role="alert" aria-live="assertive">
+      <section className="modal-panel modal-panel--sync" aria-labelledby="startup-failure-title" aria-describedby="startup-failure-description">
+        <div className="section-kicker">NEXUS</div>
+        <h2 className="section-title" id="startup-failure-title">
+          NEXUS kunne ikke starte
+        </h2>
+        <p className="modal-copy" id="startup-failure-description">
+          {error ?? "Status kunne ikke hentes."}
+        </p>
+        <div className="modal-panel__actions modal-panel__actions--sync">
+          <button type="button" className="button button--secondary" onClick={onRetry}>
+            Prøv igjen
+          </button>
+          <Link className="button" to="/health">
+            Se detaljer
+          </Link>
+        </div>
+      </section>
     </div>
   );
 }
@@ -332,20 +379,20 @@ export function ProjectHeader({
   );
 }
 
-function DailySyncOverlay({
-  title,
-  message,
-  detail,
-  onContinue,
-}: {
-  title: string;
-  message: string;
-  detail: string | null;
-  onContinue: () => void;
-}) {
+function DailySyncOverlay({ state, onDismiss, onRetry }: { state: DailySyncState; onDismiss: () => void; onRetry: () => void }) {
+  if (state.mode === "onboarding") {
+    return <OnboardingOverlay title={state.title} message={state.message} detail={state.detail} />;
+  }
+  if (state.mode === "warning") {
+    return <RecoverableWarningOverlay title={state.title} message={state.message} detail={state.detail} onDismiss={onDismiss} onRetry={onRetry} />;
+  }
+  return <FatalSyncErrorOverlay title={state.title} message={state.message} detail={state.detail} onRetry={onRetry} />;
+}
+
+function OnboardingOverlay({ title, message, detail }: { title: string; message: string; detail: string | null }) {
   return (
     <div className="modal-backdrop modal-backdrop--sync" role="presentation">
-      <section className="modal-panel modal-panel--sync" role="dialog" aria-modal="true" aria-labelledby="daily-sync-title" aria-describedby="daily-sync-description">
+      <section className="modal-panel modal-panel--sync" role="status" aria-live="polite" aria-busy="true" aria-labelledby="daily-sync-title" aria-describedby="daily-sync-description">
         <div className="sync-loader" aria-hidden="true" />
         <div className="section-kicker">OneDrive</div>
         <h2 className="section-title" id="daily-sync-title">
@@ -355,15 +402,60 @@ function DailySyncOverlay({
           {message}
         </p>
         {detail ? <div className="sync-loader__detail">{detail}</div> : null}
+      </section>
+    </div>
+  );
+}
+
+function RecoverableWarningOverlay({
+  title,
+  message,
+  detail,
+  onDismiss,
+  onRetry,
+}: {
+  title: string;
+  message: string;
+  detail: string | null;
+  onDismiss: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="modal-backdrop modal-backdrop--sync" role="presentation">
+      <section className="modal-panel modal-panel--sync" role="dialog" aria-modal="true" aria-labelledby="sync-warning-title" aria-describedby="sync-warning-description">
+        <div className="section-kicker">OneDrive</div>
+        <h2 className="section-title" id="sync-warning-title">{title}</h2>
+        <p className="modal-copy" id="sync-warning-description">{message}</p>
+        {distinctDetail(message, detail) ? <div className="sync-loader__detail">{detail}</div> : null}
         <div className="modal-panel__actions modal-panel__actions--sync">
-          <button type="button" className="button button--secondary" onClick={onContinue}>
-            Fortsett
-          </button>
-          <a className="button" href="/health" target="_blank" rel="noreferrer">
-            Se status
-          </a>
+          <button type="button" className="button button--secondary" onClick={onRetry}>Prøv igjen</button>
+          <Link className="button" to="/activity" onClick={onDismiss}>Se detaljer</Link>
         </div>
       </section>
     </div>
   );
+}
+
+function FatalSyncErrorOverlay({ title, message, detail, onRetry }: { title: string; message: string; detail: string | null; onRetry: () => void }) {
+  return (
+    <div className="modal-backdrop modal-backdrop--sync" role="presentation">
+      <section className="modal-panel modal-panel--sync" role="alertdialog" aria-modal="true" aria-labelledby="sync-failure-title" aria-describedby="sync-failure-description">
+        <div className="section-kicker">OneDrive</div>
+        <h2 className="section-title" id="sync-failure-title">{title}</h2>
+        <p className="modal-copy" id="sync-failure-description">{message}</p>
+        {distinctDetail(message, detail) ? <div className="sync-loader__detail">{detail}</div> : null}
+        <div className="modal-panel__actions modal-panel__actions--sync">
+          <button type="button" className="button button--secondary" onClick={onRetry}>Prøv synkronisering på nytt</button>
+          <Link className="button" to="/activity">Gå til Aktivitet</Link>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function distinctDetail(message: string, detail: string | null): string | null {
+  if (!detail || detail.trim().toLowerCase() === message.trim().toLowerCase()) {
+    return null;
+  }
+  return detail;
 }

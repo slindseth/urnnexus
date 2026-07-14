@@ -405,6 +405,7 @@ describe("DashboardPage", () => {
     const { container } = renderDashboard(
       makeSyncStatus({
         status: "failed",
+        error_code: "sync_failed",
         last_error: "OneDrive sync failed.",
       }),
     );
@@ -413,7 +414,7 @@ describe("DashboardPage", () => {
 
     const syncButton = getSyncButton(container);
     expect(syncButton.disabled).toBe(false);
-    expect(container.textContent).toContain("Siste sync-feil: OneDrive sync failed.");
+    expect(container.textContent).toContain("Synkroniseringen kunne ikke fullføres.");
     expect(container.textContent).not.toContain("Synk er midlertidig deaktivert fordi Appliance er opptatt med analyse eller OneDrive-state.");
   });
 });

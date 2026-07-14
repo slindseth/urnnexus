@@ -9,7 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from backend.app.models.health import HealthResponse
+from backend.app.models.health import HealthResponse, ReadinessResponse
 from backend.app.models.activity import ActivityEventsResponse, ActivityLogsResponse, ActivityStatusResponse
 from backend.app.models.operations import (
     AnalysisRunRequest,
@@ -321,6 +321,11 @@ def get_service(request: Request) -> ApplianceService:
 @router.get("/health", response_model=HealthResponse)
 def health(service: ApplianceService = Depends(get_service)) -> HealthResponse:
     return service.health()
+
+
+@router.get("/system/readiness", response_model=ReadinessResponse)
+def readiness(service: ApplianceService = Depends(get_service)) -> ReadinessResponse:
+    return service.readiness()
 
 
 @router.get("/activity/status", response_model=ActivityStatusResponse)

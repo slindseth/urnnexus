@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { AppHeader } from "../components/Layout";
 import { ErrorState } from "../components/ErrorState";
 import { EmptyState } from "../components/EmptyState";
-import { ApiRequestError, formatDateTime, getAnalysisStatus, getSyncStatus, runSync } from "../lib/api";
+import { ApiRequestError, formatDateTime, getAnalysisStatus, getSyncStatus, getUserFacingErrorMessage, runSync } from "../lib/api";
 import {
   ANALYSIS_RUNNING_LABEL,
   APPLIANCE_BUSY_MESSAGE,
@@ -30,7 +30,7 @@ export function resolveDashboardLastSyncedAt(syncStatus: SyncStatusResponse | nu
 }
 
 export function DashboardPage() {
-  const { projects, projectsLoading, projectsError, health, healthLoading, healthError, refresh } = useAppData();
+  const { projects, projectsLoading, projectsError, health, healthLoading, healthError, refresh, startupState } = useAppData();
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatusResponse | null>(null);
   const [syncBusyLive, setSyncBusyLive] = useState(false);
@@ -38,16 +38,18 @@ export function DashboardPage() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const visibleProjects = sortProjectsByActivity(projects);
   const isInitialProjectsLoad = projectsLoading && visibleProjects.length === 0;
-  const applianceStatus = healthLoading ? "loading" : health?.appliance_available ? "online" : "offline";
-  const applianceLabel = healthLoading ? "Laster" : health?.appliance_available ? "online" : "offline";
+  const applianceStatus = startupState && startupState !== "ready" ? "loading" : healthLoading ? "loading" : health?.appliance_available ? "online" : "offline";
+  const applianceLabel = startupState === "starting" ? "Starter …" : startupState === "connecting" ? "Kobler til …" : healthLoading ? "Laster" : health?.appliance_available ? "Klar" : "offline";
   const metrics = buildDashboardMetrics(visibleProjects);
   const analysisStartupBusy = analysisStatus?.status === "startup_pending" || analysisStatus?.startup_grace_active === true;
   const applianceActivity = syncStatus?.activity && syncStatus.activity !== "idle" ? syncStatus.activity : analysisStartupBusy ? "analysis" : analysisStatus?.activity ?? "idle";
   const syncHasStaleLock = Boolean(syncStatus?.last_error && isLockBusyError(syncStatus.last_error));
   const applianceBusy =
     syncBusyLive || syncStatus?.running === true || analysisStatus?.running === true || analysisStartupBusy || syncStatus?.lock_exists === true || analysisStatus?.lock_exists === true;
-  const syncPillStatus = applianceBusy ? "RUNNING" : syncHasStaleLock ? "idle" : syncStatus?.status === "failed" ? "FAILED" : "idle";
-  const syncPillLabel = applianceBusy
+  const startupLabel = startupState === "starting" ? "Starter …" : startupState === "connecting" ? "Kobler til …" : null;
+  const explicitSyncFailure = Boolean(syncStatus?.error_code && ["sync_failed", "project_sync_failed", "onedrive_sync_failed", "graph_auth_failed", "graph_permission_denied", "auth_failed"].includes(syncStatus.error_code));
+  const syncPillStatus = startupLabel ? "RUNNING" : applianceBusy ? "RUNNING" : syncHasStaleLock ? "idle" : explicitSyncFailure ? "FAILED" : "idle";
+  const syncPillLabel = startupLabel ?? (applianceBusy
     ? applianceActivity === "sync"
       ? SYNC_RUNNING_LABEL
       : applianceActivity === "analysis"
@@ -55,12 +57,12 @@ export function DashboardPage() {
         : APPLIANCE_BUSY_LABEL
     : syncHasStaleLock
       ? APPLIANCE_CLEAR_MESSAGE
-      : syncStatus?.status === "failed"
+      : explicitSyncFailure
         ? SYNC_FAILED_LABEL
-        : APPLIANCE_CLEAR_MESSAGE;
+        : APPLIANCE_CLEAR_MESSAGE);
   const syncButtonDisabled = applianceBusy;
   const syncButtonTitle = applianceBusy ? SYNC_LOCK_HELP_TEXT : SYNC_START_DESCRIPTION;
-  const syncLastErrorMessage = getVisibleSyncErrorMessage(syncStatus?.last_error);
+  const syncLastErrorMessage = getVisibleSyncErrorMessage(syncStatus?.last_error, syncStatus?.error_code);
   const syncLastErrorTone = syncStatus?.last_error && isLockBusyError(syncStatus.last_error) ? "warning" : "error";
   const busyActionNote = applianceBusy ? SYNC_LOCK_HELP_TEXT : null;
   const dashboardLastSyncedAt = resolveDashboardLastSyncedAt(syncStatus, health);
@@ -74,6 +76,9 @@ export function DashboardPage() {
     .slice(0, 8);
 
   useEffect(() => {
+    if (startupState && startupState !== "ready") {
+      return undefined;
+    }
     let cancelled = false;
     let timer: number | undefined;
     let latestSyncStatus = syncStatus;
@@ -90,7 +95,7 @@ export function DashboardPage() {
         setSyncStatus(syncResult.value);
         setSyncError(null);
       } else {
-        setSyncError(syncResult.reason instanceof Error ? syncResult.reason.message : "Kunne ikke lese sync-status.");
+        setSyncError(getUserFacingErrorMessage(syncResult.reason, "Status kunne ikke hentes."));
       }
 
       if (analysisResult.status === "fulfilled") {
@@ -115,7 +120,7 @@ export function DashboardPage() {
         window.clearTimeout(timer);
       }
     };
-  }, [syncBusyLive]);
+  }, [startupState, syncBusyLive]);
 
   async function handleRunSync() {
     setSyncMessage("Starter trygg OneDrive-sync uten rapportgenerering ...");
@@ -131,7 +136,7 @@ export function DashboardPage() {
         setSyncStatus(await getSyncStatus());
         setSyncError(null);
       } catch (error) {
-        setSyncError(error instanceof Error ? error.message : "Kunne ikke lese sync-status.");
+        setSyncError(getUserFacingErrorMessage(error, "Status kunne ikke hentes."));
       }
     } catch (error) {
       if (error instanceof ApiRequestError && error.status === 503 && error.message === APPLIANCE_BUSY_MESSAGE) {
@@ -140,7 +145,7 @@ export function DashboardPage() {
         setSyncMessage(null);
         return;
       }
-      setSyncMessage(error instanceof Error ? error.message : "Kunne ikke starte OneDrive-sync.");
+      setSyncMessage(getUserFacingErrorMessage(error, "Kunne ikke starte OneDrive-sync."));
     } finally {
       if (syncStarted) {
         refresh();

@@ -185,7 +185,7 @@ describe("ProjectsPage delete flow", () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain("Microsoft Graph-write feilet: permission denied");
+    expect(container.textContent).toContain("Kunne ikke slette prosjektet i OneDrive.");
     expect(container.textContent).not.toContain("Prosjektet finnes ikke lenger i OneDrive.");
 
     await act(async () => {

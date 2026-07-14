@@ -1,19 +1,23 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { getAnalysisStatus, getHealth, getProjects, getSyncStatus, runSync } from "../lib/api";
+import { getAnalysisStatus, getHealth, getProjects, getSystemReadiness, getSyncStatus, getUserFacingErrorMessage, isRetryableStartupError, runSync, StartupError } from "../lib/api";
 import { APPLIANCE_BUSY_MESSAGE, SYNC_STALE_LOCK_WARNING, isLockBusyError } from "../lib/applianceStatus";
 import { createProjectViewModels, filterVisibleProjects, showSampleProjectsInUi, type ProjectViewModel } from "../lib/projects";
-import type { AnalysisStatusResponse, HealthResponse, SyncStatusResponse } from "../types";
+import type { AnalysisStatusResponse, HealthResponse, ReadinessResponse, StartupState, SyncStatusResponse } from "../types";
 
 const DAILY_SYNC_STORAGE_KEY = "urn-nexus:daily-onedrive-sync";
 const DAILY_SYNC_TIMEOUT_MS = 25_000;
 const DAILY_SYNC_POLL_INTERVAL_MS = 3000;
-const DAILY_SYNC_TITLE = "Velkommen til Urban Reuse Norway's NEXUS verktøy";
+const DAILY_SYNC_ONBOARDING_TITLE = "Velkommen til Urban Reuse Norway's NEXUS verktøy";
 const DAILY_SYNC_MESSAGE = "Vent et øyeblikk mens OneDrive synkroniseres";
 const DAILY_SYNC_TIMEOUT_MESSAGE = "Synkronisering tar lengre tid enn forventet. Du kan fortsette med sist synkroniserte data.";
 const DAILY_SYNC_FAILED_MESSAGE = "OneDrive-synkroniseringen feilet.";
 const DAILY_SYNC_BACKGROUND_MESSAGE = "OneDrive synkroniseres i bakgrunnen.";
+export const STARTUP_GRACE_PERIOD_MS = 10_000;
+export const STARTUP_RETRY_DELAYS_MS = [0, 2_000, 4_000, 6_000, 8_000, 10_000] as const;
+const STARTUP_REQUEST_TIMEOUT_MS = 1_500;
 
 type DailySyncRecordStatus = "running" | "completed" | "failed" | "timeout";
+export type DailySyncModalMode = "onboarding" | "warning" | "fatal";
 
 interface DailySyncRecord {
   date: string;
@@ -21,6 +25,7 @@ interface DailySyncRecord {
   completed_at: string | null;
   status: DailySyncRecordStatus;
   last_error: string | null;
+  error_code?: string | null;
 }
 
 interface ApplianceStatusSnapshot {
@@ -28,11 +33,12 @@ interface ApplianceStatusSnapshot {
   analysisStatus: AnalysisStatusResponse;
 }
 
-interface DailySyncState {
-  mode: DailySyncRecordStatus;
+export interface DailySyncState {
+  mode: DailySyncModalMode;
   title: string;
   message: string;
   detail: string | null;
+  errorCode?: string | null;
 }
 
 interface AppDataContextValue {
@@ -45,11 +51,99 @@ interface AppDataContextValue {
   healthError: string | null;
   dailySync?: DailySyncState | null;
   dismissDailySync?: () => void;
+  retryDailySync?: () => void;
+  startupState?: StartupState;
+  startupError?: string | null;
+  retryStartup?: () => void;
   refresh: () => void;
   removeProjectByName: (projectName: string) => void;
 }
 
 export const AppDataContext = createContext<AppDataContextValue | null>(null);
+
+async function readApplianceStatus(): Promise<ApplianceStatusSnapshot> {
+  const [syncStatus, analysisStatus] = await Promise.all([getSyncStatus(), getAnalysisStatus()]);
+  return { syncStatus, analysisStatus };
+}
+
+function isValidStatusSnapshot(snapshot: ApplianceStatusSnapshot): boolean {
+  const syncStatus = snapshot.syncStatus?.status?.trim().toLowerCase();
+  const analysisStatus = snapshot.analysisStatus?.status?.trim().toLowerCase();
+  const validSyncStatuses = new Set(["idle", "running", "completed", "completed_with_warnings", "skipped_no_changes", "failed", "error", "success"]);
+  const validAnalysisStatuses = new Set(["idle", "startup_pending", "running", "completed", "failed", "auth_failed", "sync_failed"]);
+  const unclassifiedSyncFailure = ["failed", "error"].includes(syncStatus ?? "") && !snapshot.syncStatus?.error_code;
+  const unclassifiedAnalysisFailure = ["failed", "auth_failed", "sync_failed"].includes(analysisStatus ?? "") && !snapshot.analysisStatus?.error_code;
+  return Boolean(
+    snapshot.syncStatus &&
+      snapshot.analysisStatus &&
+      typeof snapshot.syncStatus.status === "string" &&
+      typeof snapshot.analysisStatus.status === "string" &&
+      syncStatus &&
+      analysisStatus &&
+      syncStatus !== "unknown" &&
+      analysisStatus !== "unknown" &&
+      validSyncStatuses.has(syncStatus) &&
+      validAnalysisStatuses.has(analysisStatus) &&
+      !unclassifiedSyncFailure &&
+      !unclassifiedAnalysisFailure,
+  );
+}
+
+function getExplicitStartupFailureCode(readiness: ReadinessResponse | null, snapshot: ApplianceStatusSnapshot | null): string | null {
+  const permanentCodes = new Set([
+    "graph_auth_failed",
+    "auth_failed",
+    "sync_failed",
+    "graph_permission_denied",
+    "backend_configuration_error",
+    "appliance_unreachable",
+    "appliance_unavailable",
+  ]);
+  for (const code of [readiness?.code, snapshot?.syncStatus.error_code, snapshot?.analysisStatus.error_code]) {
+    if (code && permanentCodes.has(code)) {
+      return code;
+    }
+  }
+  return null;
+}
+
+const EXPLICIT_SYNC_FAILURE_CODES = new Set([
+  "sync_failed",
+  "project_sync_failed",
+  "onedrive_sync_failed",
+  "graph_auth_failed",
+  "graph_permission_denied",
+  "auth_failed",
+]);
+
+function isExplicitSyncFailureCode(code: string | null | undefined): boolean {
+  return Boolean(code && EXPLICIT_SYNC_FAILURE_CODES.has(code.toLowerCase()));
+}
+
+function getDiagnosticError(error: unknown): { httpResult: number | null; classifiedErrorCode: string | null } {
+  if (!error || typeof error !== "object") {
+    return { httpResult: null, classifiedErrorCode: null };
+  }
+  const candidate = error as { status?: number; code?: string | null };
+  return {
+    httpResult: typeof candidate.status === "number" ? candidate.status : null,
+    classifiedErrorCode: typeof candidate.code === "string" ? candidate.code : null,
+  };
+}
+
+function logStartupDiagnostic(event: {
+  startupState: StartupState;
+  attempt: number | null;
+  httpResult: number | null;
+  classifiedErrorCode: string | null;
+  selectedModalMode: DailySyncModalMode | "startup" | "none";
+  reason: string;
+}): void {
+  if (!import.meta.env.DEV) {
+    return;
+  }
+  console.debug("[NEXUS startup]", event);
+}
 
 function getLocalDayKey(date = new Date()): string {
   const year = String(date.getFullYear());
@@ -93,6 +187,7 @@ function readStoredSyncRecord(): DailySyncRecord | null {
       completed_at: typeof parsed.completed_at === "string" ? parsed.completed_at : null,
       status: parsed.status as DailySyncRecordStatus,
       last_error: typeof parsed.last_error === "string" ? parsed.last_error : null,
+      error_code: typeof parsed.error_code === "string" ? parsed.error_code : null,
     };
   } catch {
     return null;
@@ -115,11 +210,147 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [dailySync, setDailySync] = useState<DailySyncState | null>(null);
+  const [startupState, setStartupState] = useState<StartupState>("starting");
+  const [startupError, setStartupError] = useState<string | null>(null);
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [startupRetryIndex, setStartupRetryIndex] = useState(0);
+  const startupBootstrappedRef = useRef(false);
+  const startupSnapshotRef = useRef<ApplianceStatusSnapshot | null>(null);
   const dailySyncBootstrappedRef = useRef(false);
   const dailySyncDismissedRef = useRef(false);
+  const retryDailySyncRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    if (startupBootstrappedRef.current) {
+      return;
+    }
+    startupBootstrappedRef.current = true;
+
+    let cancelled = false;
+    let settled = false;
+    const timers: number[] = [];
+
+    const markFailed = (error: unknown) => {
+      if (cancelled || settled) {
+        return;
+      }
+      settled = true;
+      setStartupState("failed");
+      setStartupError(getUserFacingErrorMessage(error, "Status kunne ikke hentes."));
+    };
+
+    const attemptStartup = async (attemptIndex: number) => {
+      if (cancelled || settled) {
+        return;
+      }
+      const nextState = attemptIndex === 0 ? "starting" : "connecting";
+      setStartupState(nextState);
+      logStartupDiagnostic({
+        startupState: nextState,
+        attempt: attemptIndex + 1,
+        httpResult: null,
+        classifiedErrorCode: null,
+        selectedModalMode: "startup",
+        reason: "request_started",
+      });
+
+      const timeoutPromise = new Promise<"timeout">((resolve) => {
+        window.setTimeout(() => resolve("timeout"), STARTUP_REQUEST_TIMEOUT_MS);
+      });
+      const result = await Promise.race([
+        Promise.allSettled([getSystemReadiness(), readApplianceStatus()]),
+        timeoutPromise,
+      ]);
+      if (cancelled || settled) {
+        return;
+      }
+
+      if (result !== "timeout") {
+        const [readinessResult, statusResult] = result;
+        const readiness = readinessResult.status === "fulfilled" ? readinessResult.value : null;
+        const snapshot = statusResult.status === "fulfilled" && isValidStatusSnapshot(statusResult.value) ? statusResult.value : null;
+        const permanentError = readinessResult.status === "rejected" && !isRetryableStartupError(readinessResult.reason)
+          ? readinessResult.reason
+          : statusResult.status === "rejected" && !isRetryableStartupError(statusResult.reason)
+            ? statusResult.reason
+            : null;
+        const explicitFailureCode = getExplicitStartupFailureCode(readiness, snapshot);
+
+        const readinessError = readinessResult.status === "rejected" ? getDiagnosticError(readinessResult.reason) : null;
+        const statusError = statusResult.status === "rejected" ? getDiagnosticError(statusResult.reason) : null;
+        logStartupDiagnostic({
+          startupState: attemptIndex === 0 ? "starting" : "connecting",
+          attempt: attemptIndex + 1,
+          httpResult: readinessError?.httpResult ?? statusError?.httpResult ?? (readiness && snapshot ? 200 : null),
+          classifiedErrorCode: readinessError?.classifiedErrorCode ?? statusError?.classifiedErrorCode ?? null,
+          selectedModalMode: "startup",
+          reason: permanentError || explicitFailureCode ? "explicit_startup_failure" : snapshot ? "status_received" : "retryable_startup_error",
+        });
+        if (permanentError || explicitFailureCode) {
+          markFailed(permanentError ?? new StartupError("NEXUS startup failed.", explicitFailureCode ?? "startup_failed"));
+          return;
+        }
+
+        // A successful status round is the signal that the service is usable.
+        // Readiness may be unavailable on older backends, so it is advisory.
+        if (snapshot && (readiness === null || readiness.ready)) {
+          settled = true;
+          startupSnapshotRef.current = snapshot;
+          setStartupError(null);
+          setStartupState("ready");
+          logStartupDiagnostic({
+            startupState: "ready",
+            attempt: attemptIndex + 1,
+            httpResult: 200,
+            classifiedErrorCode: null,
+            selectedModalMode: "none",
+            reason: "startup_ready",
+          });
+          return;
+        }
+      } else {
+        logStartupDiagnostic({
+          startupState: attemptIndex === 0 ? "starting" : "connecting",
+          attempt: attemptIndex + 1,
+          httpResult: 408,
+          classifiedErrorCode: "timeout",
+          selectedModalMode: "startup",
+          reason: "startup_request_timeout",
+        });
+      }
+
+      if (attemptIndex === STARTUP_RETRY_DELAYS_MS.length - 1) {
+        markFailed(new StartupError("NEXUS startup timed out."));
+        logStartupDiagnostic({
+          startupState: "failed",
+          attempt: attemptIndex + 1,
+          httpResult: 408,
+          classifiedErrorCode: "startup_timeout",
+          selectedModalMode: "startup",
+          reason: "startup_grace_period_expired",
+        });
+      }
+    };
+
+    STARTUP_RETRY_DELAYS_MS.forEach((delay, attemptIndex) => {
+      if (delay === 0) {
+        void attemptStartup(attemptIndex);
+        return;
+      }
+      timers.push(window.setTimeout(() => void attemptStartup(attemptIndex), delay));
+    });
+
+    return () => {
+      cancelled = true;
+      settled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [startupRetryIndex]);
+
+  useEffect(() => {
+    if (startupState !== "ready") {
+      return undefined;
+    }
     const controller = new AbortController();
     setProjectsLoading(true);
     setProjectsError(null);
@@ -143,14 +374,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           setProjects(viewModels);
         } else {
           setProjects([]);
-          setProjectsError(projectsResult.reason instanceof Error ? projectsResult.reason.message : "Kunne ikke laste prosjekter.");
+          setProjectsError(getUserFacingErrorMessage(projectsResult.reason, "Kunne ikke laste prosjekter."));
         }
 
         if (healthResult.status === "fulfilled") {
           setHealth(healthResult.value);
         } else {
           setHealth(null);
-          setHealthError(healthResult.reason instanceof Error ? healthResult.reason.message : "Kunne ikke lese helsestatus.");
+          setHealthError(getUserFacingErrorMessage(healthResult.reason, "Kunne ikke lese helsestatus."));
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -164,9 +395,12 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     return () => {
       controller.abort();
     };
-  }, [refreshIndex]);
+  }, [refreshIndex, startupState]);
 
   useEffect(() => {
+    if (startupState !== "ready") {
+      return undefined;
+    }
     if (dailySyncBootstrappedRef.current) {
       return;
     }
@@ -196,11 +430,19 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       clearTimeoutTimer();
     };
 
-    const setModal = (state: DailySyncState | null) => {
+    const setModal = (state: DailySyncState | null, reason = state ? `modal_${state.mode}` : "modal_closed") => {
       if (dailySyncDismissedRef.current && state !== null) {
         return;
       }
       setDailySync(state);
+      logStartupDiagnostic({
+        startupState: "ready",
+        attempt: null,
+        httpResult: null,
+        classifiedErrorCode: state?.errorCode ?? null,
+        selectedModalMode: state?.mode ?? "none",
+        reason,
+      });
     };
 
     const persistRecord = (record: DailySyncRecord) => {
@@ -219,11 +461,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
     const showRunningModal = (detail: string | null = DAILY_SYNC_BACKGROUND_MESSAGE, message = DAILY_SYNC_MESSAGE) => {
       setModal({
-        mode: "running",
-        title: DAILY_SYNC_TITLE,
+        mode: "onboarding",
+        title: DAILY_SYNC_ONBOARDING_TITLE,
         message,
         detail,
-      });
+      }, "sync_running");
     };
 
     const showBusyModal = () => {
@@ -232,20 +474,28 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
     const showTimeoutModal = (detail = "OneDrive synkroniserer fortsatt i bakgrunnen.") => {
       setModal({
-        mode: "timeout",
-        title: DAILY_SYNC_TITLE,
+        mode: "warning",
+        title: "OneDrive-synkronisering tar tid",
         message: DAILY_SYNC_TIMEOUT_MESSAGE,
         detail,
-      });
+      }, "sync_timeout_warning");
     };
 
-    const showFailureModal = (detail: string) => {
+    const showFailureModal = (detail: string, errorCode: string) => {
+      if (!isExplicitSyncFailureCode(errorCode)) {
+        return;
+      }
+      const safeMessage = getUserFacingErrorMessage(
+        { code: errorCode, rawMessage: detail },
+        "Synkroniseringen kunne ikke fullføres.",
+      );
       setModal({
-        mode: "failed",
-        title: DAILY_SYNC_TITLE,
-        message: DAILY_SYNC_FAILED_MESSAGE,
-        detail,
-      });
+        mode: "fatal",
+        title: DAILY_SYNC_FAILED_MESSAGE,
+        message: safeMessage,
+        detail: null,
+        errorCode,
+      }, "explicit_sync_failure");
     };
 
     const schedulePoll = (delayMs = DAILY_SYNC_POLL_INTERVAL_MS) => {
@@ -273,11 +523,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         showTimeoutModal();
       }, DAILY_SYNC_TIMEOUT_MS);
     };
-
-    async function readApplianceStatus(): Promise<ApplianceStatusSnapshot> {
-      const [syncStatus, analysisStatus] = await Promise.all([getSyncStatus(), getAnalysisStatus()]);
-      return { syncStatus, analysisStatus };
-    }
 
     async function pollSyncStatus() {
       if (cancelled) {
@@ -345,7 +590,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        if (normalizedStatus.includes("fail") || normalizedStatus.includes("error") || Boolean(syncStatus.last_error)) {
+        const explicitFailureCode = syncStatus.error_code ?? analysisStatus.error_code ?? null;
+        if (isExplicitSyncFailureCode(explicitFailureCode)) {
           const detail = syncStatus.last_error ?? currentRecord?.last_error ?? "Kunne ikke fullføre OneDrive-synkronisering.";
           persistRecord({
             date: currentRecord?.date ?? getLocalDayKey(),
@@ -353,9 +599,20 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             completed_at: completedAt,
             status: "failed",
             last_error: detail,
+            error_code: explicitFailureCode,
           });
           clearTimers();
-          showFailureModal(detail);
+          showFailureModal(detail, explicitFailureCode ?? "sync_failed");
+          return;
+        }
+
+        // A status string or last_error without a classified code is not enough
+        // to tell the user that synchronization failed. Treat it as stale or
+        // incomplete backend state and let the next explicit status decide.
+        if (normalizedStatus.includes("fail") || normalizedStatus.includes("error") || syncStatus.last_error) {
+          clearStoredRecord();
+          clearTimers();
+          setModal(null, "unclassified_sync_status_ignored");
           return;
         }
 
@@ -382,16 +639,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         }
 
         if (currentRecord?.status === "running") {
-          const detail = "Synkroniseringen stoppet uten å fullføre.";
-          persistRecord({
-            date: currentRecord.date,
-            started_at: currentRecord.started_at,
-            completed_at: completedAt,
-            status: "failed",
-            last_error: detail,
-          });
+          clearStoredRecord();
           clearTimers();
-          showFailureModal(detail);
+          setModal(null, "sync_stopped_without_explicit_error");
           return;
         }
 
@@ -400,11 +650,12 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         if (cancelled) {
           return;
         }
-        const detail = error instanceof Error ? error.message : "Kunne ikke lese sync-status.";
         if (currentRecord?.status === "timeout") {
-          showTimeoutModal(detail);
+          showTimeoutModal(getUserFacingErrorMessage(error, "Status kunne ikke hentes."));
         } else {
-          showRunningModal(detail);
+          // Keep the running spinner visible. Transport errors are not sync
+          // failures and must not become a blocking error modal.
+          showRunningModal();
         }
         schedulePoll(DAILY_SYNC_POLL_INTERVAL_MS);
       }
@@ -413,11 +664,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     async function startNewDailySync(todayKey: string) {
       dailySyncDismissedRef.current = false;
       setModal({
-        mode: "running",
-        title: DAILY_SYNC_TITLE,
+        mode: "onboarding",
+        title: DAILY_SYNC_ONBOARDING_TITLE,
         message: DAILY_SYNC_MESSAGE,
         detail: "Klargjør OneDrive-synkronisering ...",
-      });
+      }, "sync_start_requested");
 
       try {
         const response = await runSync();
@@ -452,6 +703,12 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           const syncRunning = syncStatus.running || (syncStatus.lock_exists && applianceActivity === "sync");
           const analysisRunning = analysisStatus.running || (analysisStatus.lock_exists && applianceActivity === "analysis");
           const anyLiveLock = syncStatus.lock_exists || analysisStatus.lock_exists;
+          const explicitFailureCode = syncStatus.error_code ?? analysisStatus.error_code ?? null;
+
+          if (isExplicitSyncFailureCode(explicitFailureCode)) {
+            showFailureModal(syncStatus.last_error ?? analysisStatus.last_error ?? "Kunne ikke fullføre OneDrive-synkronisering.", explicitFailureCode ?? "sync_failed");
+            return;
+          }
 
           if (syncRunning) {
             const startedAt = syncStatus.last_started_at ?? new Date().toISOString();
@@ -486,20 +743,36 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
         if (error instanceof Error && isLockBusyError(error.message)) {
           clearStoredRecord();
-          showFailureModal(SYNC_STALE_LOCK_WARNING);
+          setModal({
+            mode: "warning",
+            title: "Synkronisering ikke fullført",
+            message: "OneDrive-synkroniseringen ble ikke fullført.",
+            detail: SYNC_STALE_LOCK_WARNING,
+          }, "stale_lock_warning");
           return;
         }
 
-        showFailureModal(error instanceof Error ? error.message : "Kunne ikke starte OneDrive-synkronisering.");
+        const errorCode = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null;
+        if (isExplicitSyncFailureCode(errorCode)) {
+          const rawMessage = error instanceof Error ? error.message : "Kunne ikke starte OneDrive-synkronisering.";
+          showFailureModal(rawMessage, errorCode ?? "sync_failed");
+          return;
+        }
+
+        // A generic 500/timeout/connection failure is recoverable. It must not
+        // be presented as a OneDrive sync failure after startup is ready.
+        clearStoredRecord();
+        clearTimers();
+        setModal(null, "generic_sync_start_error_ignored");
       }
     }
 
-    async function bootstrapDailySync() {
+    async function bootstrapDailySync(initialSnapshot: ApplianceStatusSnapshot | null) {
       const todayKey = getLocalDayKey();
       const storedRecord = currentRecord;
 
       try {
-        const { syncStatus, analysisStatus } = await readApplianceStatus();
+        const { syncStatus, analysisStatus } = initialSnapshot ?? await readApplianceStatus();
         if (cancelled) {
           return;
         }
@@ -550,19 +823,28 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         const backendVisibleError = backendLockError ? null : syncStatus.last_error;
         const backendCompletedToday = Boolean(syncStatus.last_completed_at && isSameLocalDayAsToday(syncStatus.last_completed_at));
         const backendStartedToday = Boolean(syncStatus.last_started_at && isSameLocalDayAsToday(syncStatus.last_started_at));
-        const backendFailed = !backendLockError && (normalizedStatus.includes("fail") || normalizedStatus.includes("error") || Boolean(backendVisibleError));
+        const explicitFailureCode = syncStatus.error_code ?? analysisStatus.error_code ?? null;
+        const backendFailed = !backendLockError && isExplicitSyncFailureCode(explicitFailureCode);
 
         if (backendFailed) {
-          const detail = backendVisibleError ?? activeStoredRecord?.last_error ?? DAILY_SYNC_FAILED_MESSAGE;
+          const detail = backendVisibleError ?? "Kunne ikke fullføre OneDrive-synkroniseringen.";
           persistRecord({
             date: todayKey,
             started_at: syncStatus.last_started_at ?? activeStoredRecord?.started_at ?? null,
             completed_at: syncStatus.last_completed_at ?? new Date().toISOString(),
             status: "failed",
             last_error: detail,
+            error_code: explicitFailureCode,
           });
-          showFailureModal(detail);
+          showFailureModal(detail, explicitFailureCode ?? "sync_failed");
           return;
+        }
+
+        if (normalizedStatus.includes("fail") || normalizedStatus.includes("error") || backendVisibleError) {
+          // Older backends persisted a failed status without an error code. It
+          // is not evidence of a current sync failure and must not resurrect a
+          // stale blocking modal on the next page load.
+          clearStoredRecord();
         }
 
         if (backendCompletedToday) {
@@ -584,11 +866,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             return;
           }
           if (activeStoredRecord.status === "failed") {
-            showFailureModal(activeStoredRecord.last_error ?? DAILY_SYNC_FAILED_MESSAGE);
-            return;
+            if (isExplicitSyncFailureCode(activeStoredRecord.error_code)) {
+              showFailureModal(activeStoredRecord.last_error ?? "Kunne ikke fullføre OneDrive-synkroniseringen.", activeStoredRecord.error_code ?? "sync_failed");
+              return;
+            }
+            clearStoredRecord();
           }
           if (activeStoredRecord.status === "timeout") {
-            showTimeoutModal(activeStoredRecord.last_error ?? "OneDrive synkroniserer fortsatt i bakgrunnen.");
+            showTimeoutModal();
             schedulePoll();
             return;
           }
@@ -609,16 +894,35 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         if (cancelled) {
           return;
         }
-        showFailureModal(error instanceof Error ? error.message : "Kunne ikke lese sync-status.");
+        const errorCode = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null;
+        if (isExplicitSyncFailureCode(errorCode)) {
+          showFailureModal(error instanceof Error ? error.message : "Kunne ikke fullføre OneDrive-synkroniseringen.", errorCode ?? "sync_failed");
+          return;
+        }
+        clearStoredRecord();
+        setModal(null, "generic_sync_status_error_ignored");
       }
     }
 
-    void bootstrapDailySync();
+    retryDailySyncRef.current = () => {
+      if (cancelled) {
+        return;
+      }
+      dailySyncDismissedRef.current = false;
+      clearTimers();
+      clearStoredRecord();
+      void startNewDailySync(getLocalDayKey());
+    };
+
+    const initialSnapshot = startupSnapshotRef.current;
+    startupSnapshotRef.current = null;
+    void bootstrapDailySync(initialSnapshot);
     return () => {
       cancelled = true;
       clearTimers();
+      retryDailySyncRef.current = null;
     };
-  }, []);
+  }, [startupState]);
 
   const projectWarnings = useMemo(
     () =>
@@ -631,6 +935,19 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setDailySync(null);
   };
 
+  const retryDailySync = () => {
+    retryDailySyncRef.current?.();
+  };
+
+  const retryStartup = () => {
+    startupBootstrappedRef.current = false;
+    startupSnapshotRef.current = null;
+    setDailySync(null);
+    setStartupError(null);
+    setStartupState("starting");
+    setStartupRetryIndex((value) => value + 1);
+  };
+
   const value: AppDataContextValue = {
     projects,
     projectsLoading,
@@ -641,6 +958,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     healthError,
     dailySync,
     dismissDailySync,
+    retryDailySync,
+    startupState,
+    startupError,
+    retryStartup,
     refresh: () => setRefreshIndex((value) => value + 1),
     removeProjectByName: (projectName: string) =>
       setProjects((current) => current.filter((project) => project.projectName !== projectName)),

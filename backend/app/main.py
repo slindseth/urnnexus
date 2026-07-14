@@ -99,7 +99,7 @@ def create_app(settings: ApplianceSettings | None = None, *, onedrive_writer: On
 
     @app.exception_handler(ApplianceUnavailableError)
     async def appliance_unavailable_handler(_: Request, exc: ApplianceUnavailableError) -> JSONResponse:
-        return JSONResponse(status_code=503, content=ApiError(code="appliance_unavailable", detail=str(exc)).model_dump(mode="json"))
+        return JSONResponse(status_code=503, content=ApiError(code="appliance_unreachable", detail=str(exc)).model_dump(mode="json"))
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(_: Request, exc: Exception) -> JSONResponse:

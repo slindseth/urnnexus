@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
-import { createProjectFolder, formatBytes, formatDateTime, getProjectFiles, uploadProjectFile } from "../lib/api";
+import { createProjectFolder, formatBytes, formatDateTime, getProjectFiles, getUserFacingErrorMessage, uploadProjectFile } from "../lib/api";
 import { buildBreadcrumbs, buildSearchResults, getFolderNode, getVisibleFolderChildren, type FileSortKey } from "../lib/fileBrowser";
 import type { FlatFileRecord } from "../lib/fileTree";
 import { useResource } from "../lib/useResource";
@@ -42,7 +42,7 @@ function displayExtension(extension: string | null | undefined): string {
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+  return getUserFacingErrorMessage(error, fallback);
 }
 
 function splitUploadPath(path: string): string[] {
@@ -145,7 +145,7 @@ export function ProjectFilesPage() {
       );
       await refreshAll();
     } catch (error) {
-      setOperationMessage(error instanceof Error ? error.message : "Kunne ikke laste opp filen.");
+      setOperationMessage(getErrorMessage(error, "Kunne ikke laste opp filen."));
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -240,7 +240,7 @@ export function ProjectFilesPage() {
       setNewFolderName("");
       await refreshAll();
     } catch (error) {
-      setOperationMessage(error instanceof Error ? error.message : "Kunne ikke opprette mappe.");
+      setOperationMessage(getErrorMessage(error, "Kunne ikke opprette mappe."));
     }
   }
 

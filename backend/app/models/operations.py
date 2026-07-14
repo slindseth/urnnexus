@@ -105,6 +105,7 @@ class SyncStatusResponse(ApiModel):
     last_started_at: datetime | None = None
     last_completed_at: datetime | None = None
     last_error: str | None = None
+    error_code: str | None = None
     projects_synced: int = 0
     files_changed: int = 0
     reports_found: int = 0
@@ -126,6 +127,7 @@ class AnalysisStatusResponse(ApiModel):
     auth_status: Literal["unknown", "ok", "auth_failed", "sync_failed"] = "unknown"
     last_error: str | None = None
     last_start_error: str | None = None
+    error_code: str | None = None
     projects_synced: int = 0
     files_changed: int = 0
     reports_found: int = 0

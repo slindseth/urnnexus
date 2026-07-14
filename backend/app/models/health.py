@@ -6,6 +6,18 @@ from pathlib import Path
 from .common import ApiModel
 
 
+class ReadinessResponse(ApiModel):
+    """Cheap liveness/readiness snapshot used during frontend startup."""
+
+    ready: bool
+    backend: bool = True
+    appliance: bool = False
+    graph: bool = False
+    status: str = "starting"
+    code: str | None = None
+    detail: str | None = None
+
+
 class HealthResponse(ApiModel):
     appliance_available: bool
     uptime_seconds: float

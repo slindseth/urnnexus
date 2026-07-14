@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteProject, getActivityEvents, getActivityLogs, getActivityStatus, getAnalysisStatus, runAnalysis, runSync, uploadProjectFile } from "./api";
+import { ApiRequestError, deleteProject, getActivityEvents, getActivityLogs, getActivityStatus, getAnalysisStatus, getSystemReadiness, getUserFacingErrorMessage, runAnalysis, runSync, StartupError, uploadProjectFile } from "./api";
 
 describe("api sync", () => {
   afterEach(() => {
@@ -221,5 +221,30 @@ describe("api sync", () => {
     expect(body.get("target_folder")).toBe("Anbud/Konkurranse/Vedlegg");
     expect((body.get("file") as File).name).toBe("tilbud.pdf");
     expect(response.relative_path).toBe("Anbud/Konkurranse/Vedlegg/tilbud.pdf");
+  });
+});
+
+describe("startup error boundary", () => {
+  it("reads the lightweight readiness endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ready: true, backend: true, appliance: true, graph: true, status: "ready" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(getSystemReadiness()).resolves.toMatchObject({ ready: true, status: "ready" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/system/readiness", expect.objectContaining({ headers: { Accept: "application/json" } }));
+  });
+
+  it("never maps a raw internal server error to end-user copy", () => {
+    const error = new ApiRequestError(500, "Internal server error", "internal_error");
+    const authError = new ApiRequestError(401, "invalid_grant", "graph_auth_failed");
+    const startupError = new StartupError("startup timed out");
+    expect(getUserFacingErrorMessage(error)).toBe("Status kunne ikke hentes.");
+    expect(getUserFacingErrorMessage(error)).not.toContain("Internal server error");
+    expect(error.category).toBe("Backend");
+    expect(authError.category).toBe("Graph Authentication");
+    expect(startupError.category).toBe("Startup");
   });
 });

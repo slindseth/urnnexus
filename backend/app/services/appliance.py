@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from backend.app.config import ApplianceSettings
 from backend.app.models.common import CountFacet
 from backend.app.models.files import ProjectFileFilters, ProjectFileNode, ProjectFilesResponse
-from backend.app.models.health import HealthResponse
+from backend.app.models.health import HealthResponse, ReadinessResponse
 from backend.app.models.activity import (
     ActivityError,
     ActivityEvent,
@@ -910,6 +910,31 @@ class ApplianceService:
     def health(self) -> HealthResponse:
         return self._cached_health()
 
+    def readiness(self) -> ReadinessResponse:
+        """Return a lightweight readiness snapshot without touching sync state."""
+        appliance_root = self.settings.resolved_appliance_root()
+        appliance_available = appliance_root.exists() and appliance_root.is_dir()
+        if not appliance_available:
+            return ReadinessResponse(
+                ready=False,
+                backend=True,
+                appliance=False,
+                graph=False,
+                status="starting",
+                code="appliance_starting",
+                detail="Appliance-root er ikke tilgjengelig ennå.",
+            )
+
+        # Graph is intentionally a capability flag here. Authentication and sync
+        # are verified by their own status endpoints, never by readiness.
+        return ReadinessResponse(
+            ready=True,
+            backend=True,
+            appliance=True,
+            graph=True,
+            status="ready",
+        )
+
     def _invalidate_health_cache(self) -> None:
         with self._health_cache_lock:
             self._health_cache_timestamp = 0.0
@@ -1653,7 +1678,7 @@ class ApplianceService:
         lowered = str(message or "").casefold()
         if not lowered.strip():
             return True
-        return any(pattern in lowered for pattern in ACTIVITY_LOG_NOISE_PATTERNS)
+        return any(pattern in lowered for pattern in (*ACTIVITY_LOG_NOISE_PATTERNS, *ACTIVITY_LOCK_NOISE_PATTERNS))
 
     def _is_meaningful_activity_error(self, message: str | None) -> bool:
         lowered = str(message or "").casefold()
@@ -2115,12 +2140,12 @@ class ApplianceService:
                 process=process,
                 last_started_at=started_at,
                 status="running",
-                project_name=project_name,
+                project_name=None,
             )
             self._write_activity_journal(
                 level="INFO",
                 message="Starting OneDrive sync",
-                project_name=project_name,
+                project_name=None,
                 component="OneDrive",
                 kind="log",
                 details={"job_id": job_id},
@@ -2226,6 +2251,7 @@ class ApplianceService:
             snapshot = self._runtime_activity_snapshot_locked()
             self._refresh_sync_state_locked(snapshot=snapshot)
             self._clear_stale_lock_error(self._sync_state, label="sync")
+            error_code = "sync_failed" if self._sync_state.status in {"failed", "error"} and self._sync_state.last_error else None
             return SyncStatusResponse(
                 running=snapshot.sync_running,
                 process_alive=snapshot.sync_running,
@@ -2236,6 +2262,7 @@ class ApplianceService:
                 last_started_at=self._sync_state.last_started_at,
                 last_completed_at=self._sync_state.last_completed_at,
                 last_error=self._sync_state.last_error,
+                error_code=error_code,
                 projects_synced=self._sync_state.projects_synced,
                 files_changed=self._sync_state.files_changed,
                 reports_found=self._sync_state.reports_found,
@@ -2271,6 +2298,12 @@ class ApplianceService:
             elif effective_status == "running" and effective_auth_status == "unknown":
                 effective_auth_status = "ok"
 
+            error_code = None
+            if effective_status == "auth_failed" or effective_auth_status == "auth_failed":
+                error_code = "graph_auth_failed"
+            elif effective_status == "sync_failed" or effective_auth_status == "sync_failed":
+                error_code = "sync_failed"
+
             return AnalysisStatusResponse(
                 running=effective_running,
                 process_alive=effective_process_alive,
@@ -2286,6 +2319,7 @@ class ApplianceService:
                 auth_status=effective_auth_status,  # type: ignore[arg-type]
                 last_error=self._analysis_state.last_error,
                 last_start_error=self._analysis_state.last_start_error,
+                error_code=error_code,
                 projects_synced=self._analysis_state.projects_synced,
                 files_changed=self._analysis_state.files_changed,
                 reports_found=self._analysis_state.reports_found,
