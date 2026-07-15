@@ -1764,7 +1764,6 @@ code {
   border-radius: var(--radius-md);
   background: var(--surface-alt);
   padding: 10px;
-  scroll-behavior: smooth;
 }
 
 .activity-log-list {

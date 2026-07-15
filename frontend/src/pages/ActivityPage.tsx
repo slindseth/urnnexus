@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type SVGProps } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SVGProps } from "react";
 import { AppHeader } from "../components/Layout";
 import { EmptyState } from "../components/EmptyState";
 import { StatusPill } from "../components/StatusPill";
@@ -23,41 +23,47 @@ const LEVEL_TONES: Record<ActivityLevel, "success" | "info" | "warning" | "dange
   ERROR: "danger",
 };
 
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 export function ActivityPage() {
   const { status, statusLoading, statusError, events, eventsLoading, eventsError, logs, logsLoading, logsError } = useActivityData();
   const [searchTerm, setSearchTerm] = useState("");
-  const [followLogs, setFollowLogs] = useState(true);
+  const [pinLogsToTop, setPinLogsToTop] = useState(true);
   const [clearedAfterMs, setClearedAfterMs] = useState(0);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const logViewportRef = useRef<HTMLDivElement | null>(null);
 
-  const visibleEvents = events?.events ?? [];
-  const visibleErrors = events?.errors ?? [];
-  const visibleLogs = (logs?.entries ?? []).filter((entry) => {
-    const timestampMs = Date.parse(entry.timestamp);
-    if (Number.isFinite(timestampMs) && timestampMs <= clearedAfterMs) {
-      return false;
-    }
-    if (!searchTerm.trim()) {
-      return true;
-    }
-    const haystack = [entry.message, entry.project_name, entry.component, entry.level, formatTimeOfDay(entry.timestamp)]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(searchTerm.trim().toLowerCase());
-  });
+  const visibleEvents = sortActivityEntries(events?.events ?? []);
+  const visibleErrors = sortActivityEntries(events?.errors ?? []);
+  const visibleLogs = useMemo(() => {
+    const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+    const filteredLogs = (logs?.entries ?? []).filter((entry) => {
+      const timestampMs = Date.parse(entry.timestamp);
+      if (Number.isFinite(timestampMs) && timestampMs <= clearedAfterMs) {
+        return false;
+      }
+      if (!normalizedSearchTerm) {
+        return true;
+      }
+      const haystack = [entry.message, entry.project_name, entry.component, entry.level, formatTimeOfDay(entry.timestamp)]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedSearchTerm);
+    });
+    return sortActivityEntries(filteredLogs);
+  }, [clearedAfterMs, logs?.entries, searchTerm]);
 
-  useEffect(() => {
-    if (!followLogs) {
+  useIsomorphicLayoutEffect(() => {
+    if (!pinLogsToTop) {
       return;
     }
     const container = logViewportRef.current;
     if (!container) {
       return;
     }
-    container.scrollTop = container.scrollHeight;
-  }, [followLogs, visibleLogs.length, searchTerm]);
+    container.scrollTop = 0;
+  }, [events?.errors, events?.events, events?.updated_at, logs?.updated_at, pinLogsToTop, visibleLogs]);
 
   useEffect(() => {
     if (copyState !== "copied") {
@@ -103,8 +109,8 @@ export function ActivityPage() {
     if (!container) {
       return;
     }
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    setFollowLogs(distanceFromBottom < 24);
+    const isAtTop = container.scrollTop <= 1;
+    setPinLogsToTop(isAtTop);
   }
 
   const statusTone = status ? STATUS_TONES[status.state] : "neutral";
@@ -205,9 +211,6 @@ export function ActivityPage() {
               <span>Søk</span>
               <input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder={logSearchPlaceholder} />
             </label>
-            <button type="button" className="button button--secondary" onClick={() => setFollowLogs((value) => !value)}>
-              {followLogs ? "Pause auto-scroll" : "Fortsett auto-scroll"}
-            </button>
             <button type="button" className="button button--secondary" onClick={handleClearLogs}>
               Tøm visning
             </button>
@@ -245,6 +248,26 @@ export function ActivityPage() {
       </section>
     </div>
   );
+}
+
+type TimestampedActivity = { timestamp: string };
+
+function sortActivityEntries<T extends TimestampedActivity>(entries: T[]): T[] {
+  return [...entries].sort((left, right) => {
+    const leftTimestamp = Date.parse(left.timestamp);
+    const rightTimestamp = Date.parse(right.timestamp);
+
+    if (Number.isFinite(leftTimestamp) && Number.isFinite(rightTimestamp)) {
+      return rightTimestamp - leftTimestamp;
+    }
+    if (Number.isFinite(rightTimestamp)) {
+      return 1;
+    }
+    if (Number.isFinite(leftTimestamp)) {
+      return -1;
+    }
+    return right.timestamp.localeCompare(left.timestamp);
+  });
 }
 
 function ActivityPanel({
