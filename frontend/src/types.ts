@@ -14,8 +14,39 @@ export interface ApiError {
   detail: string;
 }
 
-export type ActivityState = "Klar" | "Starter" | "Synkroniserer" | "Analyserer" | "Genererer rapport" | "Sender e-post" | "Feilet";
+export type ActivityState =
+  | "Klar"
+  | "Starter"
+  | "Starter synkronisering"
+  | "Kobler til OneDrive"
+  | "Henter endringer"
+  | "Synkroniserer prosjekt"
+  | "Laster ned filer"
+  | "Oppdaterer lokal status"
+  | "Fullfører synkronisering"
+  | "Synkronisering fullført"
+  | "Synkronisering fullført uten endringer"
+  | "Synkronisering feilet"
+  | "Synkroniserer"
+  | "Analyserer"
+  | "Genererer rapport"
+  | "Sender e-post"
+  | "Feilet";
 export type ActivityLevel = "INFO" | "SUCCESS" | "WARNING" | "ERROR";
+export type ActivityCategory = "Sync" | "Analysis" | "System" | "OneDrive" | "Report" | "Error";
+export type ActivityRunMode = "sync_only" | "analysis" | "unknown";
+export type SyncStrategy = "delta" | "full" | "fallback_full" | "unknown";
+
+export interface SyncPerformance {
+  total_duration_seconds?: number | null;
+  authentication_seconds?: number | null;
+  graph_query_seconds?: number | null;
+  downloads_seconds?: number | null;
+  local_state_update_seconds?: number | null;
+  finalization_seconds?: number | null;
+  graph_requests?: number | null;
+  downloaded_bytes?: number | null;
+}
 
 export interface ActivityStatusResponse {
   state: ActivityState;
@@ -29,6 +60,16 @@ export interface ActivityStatusResponse {
   last_synced_at: string | null;
   last_analyzed_at: string | null;
   updated_at: string;
+  job_type?: "sync" | "analysis" | null;
+  job_id?: string | null;
+  run_mode?: ActivityRunMode;
+  event_code?: string | null;
+  current_phase?: string | null;
+  current_project?: string | null;
+  progress?: number | null;
+  sync_strategy?: SyncStrategy;
+  sync_strategy_reason?: string | null;
+  performance?: SyncPerformance | null;
 }
 
 export interface ActivityEvent {
@@ -37,6 +78,13 @@ export interface ActivityEvent {
   project_name: string | null;
   component: string | null;
   message: string;
+  category?: ActivityCategory;
+  source?: string | null;
+  event_code?: string | null;
+  phase?: string | null;
+  run_mode?: ActivityRunMode;
+  job_type?: "sync" | "analysis" | null;
+  job_id?: string | null;
 }
 
 export interface ActivityError {
@@ -44,6 +92,13 @@ export interface ActivityError {
   project_name: string | null;
   component: string | null;
   message: string;
+  category?: "Error";
+  source?: string | null;
+  event_code?: string | null;
+  phase?: string | null;
+  run_mode?: ActivityRunMode;
+  job_type?: "sync" | "analysis" | null;
+  job_id?: string | null;
 }
 
 export interface ActivityEventsResponse {
@@ -58,6 +113,13 @@ export interface ActivityLogEntry {
   project_name: string | null;
   component: string | null;
   message: string;
+  category?: ActivityCategory;
+  source?: string | null;
+  event_code?: string | null;
+  phase?: string | null;
+  run_mode?: ActivityRunMode;
+  job_type?: "sync" | "analysis" | null;
+  job_id?: string | null;
 }
 
 export interface ActivityLogsResponse {
@@ -327,6 +389,23 @@ export interface SyncRunResponse {
   projects_synced: number;
   files_changed: number;
   reports_found: number;
+  job_type?: "sync";
+  requested_by?: string;
+  requested_at?: string | null;
+  current_phase?: string | null;
+  current_project?: string | null;
+  progress?: number | null;
+  process_id?: number | null;
+  appliance_run_id?: string | null;
+  run_mode?: ActivityRunMode;
+  event_code?: string | null;
+  sync_strategy?: SyncStrategy;
+  sync_strategy_reason?: string | null;
+  remote_items_examined?: number;
+  files_downloaded?: number;
+  files_deleted?: number;
+  elapsed_seconds?: number | null;
+  performance?: SyncPerformance | null;
 }
 
 export interface SyncStatusResponse {
@@ -344,6 +423,23 @@ export interface SyncStatusResponse {
   files_changed: number;
   reports_found: number;
   status: string;
+  job_type?: "sync";
+  requested_by?: string;
+  requested_at?: string | null;
+  current_phase?: string | null;
+  current_project?: string | null;
+  progress?: number | null;
+  process_id?: number | null;
+  appliance_run_id?: string | null;
+  run_mode?: ActivityRunMode;
+  event_code?: string | null;
+  sync_strategy?: SyncStrategy;
+  sync_strategy_reason?: string | null;
+  remote_items_examined?: number;
+  files_downloaded?: number;
+  files_deleted?: number;
+  elapsed_seconds?: number | null;
+  performance?: SyncPerformance | null;
 }
 
 export interface AnalysisRunRequest {
@@ -363,6 +459,16 @@ export interface AnalysisRunResponse {
   reports_found: number;
   email_mode: "daily_digest" | "immediate";
   project_name: string | null;
+  job_type?: "analysis";
+  requested_by?: string;
+  requested_at?: string | null;
+  current_phase?: string | null;
+  current_project?: string | null;
+  progress?: number | null;
+  process_id?: number | null;
+  appliance_run_id?: string | null;
+  run_mode?: ActivityRunMode;
+  event_code?: string | null;
 }
 
 export interface AnalysisStatusResponse {
@@ -389,4 +495,14 @@ export interface AnalysisStatusResponse {
   project_name: string | null;
   status: AnalysisStatus;
   analysis_started: boolean;
+  job_type?: "analysis";
+  requested_by?: string;
+  requested_at?: string | null;
+  current_phase?: string | null;
+  current_project?: string | null;
+  progress?: number | null;
+  process_id?: number | null;
+  appliance_run_id?: string | null;
+  run_mode?: ActivityRunMode;
+  event_code?: string | null;
 }

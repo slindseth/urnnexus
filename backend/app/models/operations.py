@@ -7,6 +7,21 @@ from pydantic import Field
 
 from .common import ApiModel
 
+JobType = Literal["sync", "analysis"]
+RunMode = Literal["sync_only", "analysis", "unknown"]
+SyncStrategy = Literal["delta", "full", "fallback_full", "unknown"]
+
+
+class SyncPerformance(ApiModel):
+    total_duration_seconds: float | None = None
+    authentication_seconds: float | None = None
+    graph_query_seconds: float | None = None
+    downloads_seconds: float | None = None
+    local_state_update_seconds: float | None = None
+    finalization_seconds: float | None = None
+    graph_requests: int | None = None
+    downloaded_bytes: int | None = None
+
 
 class ProjectCreateRequest(ApiModel):
     project_name: str
@@ -44,6 +59,11 @@ class AnalysisRunRequest(ApiModel):
     email_mode: Literal["daily_digest", "immediate"] = "daily_digest"
 
 
+class SyncRunRequest(ApiModel):
+    project_name: str | None = None
+    idempotency_key: str | None = None
+
+
 class AnalysisRunResponse(ApiModel):
     job_id: str
     running: bool
@@ -56,6 +76,16 @@ class AnalysisRunResponse(ApiModel):
     reports_found: int = 0
     email_mode: Literal["daily_digest", "immediate"] = "daily_digest"
     project_name: str | None = None
+    job_type: Literal["analysis"] = "analysis"
+    requested_by: str = "nexus-web"
+    requested_at: datetime | None = None
+    current_phase: str | None = None
+    current_project: str | None = None
+    progress: float | None = None
+    process_id: int | None = None
+    appliance_run_id: str | None = None
+    run_mode: RunMode = "analysis"
+    event_code: str | None = None
 
 
 class FileUploadResponse(ApiModel):
@@ -93,6 +123,23 @@ class SyncRunResponse(ApiModel):
     projects_synced: int = 0
     files_changed: int = 0
     reports_found: int = 0
+    job_type: Literal["sync"] = "sync"
+    requested_by: str = "nexus-web"
+    requested_at: datetime | None = None
+    current_phase: str | None = None
+    current_project: str | None = None
+    progress: float | None = None
+    process_id: int | None = None
+    appliance_run_id: str | None = None
+    run_mode: RunMode = "sync_only"
+    event_code: str | None = None
+    sync_strategy: SyncStrategy = "unknown"
+    sync_strategy_reason: str | None = None
+    remote_items_examined: int = 0
+    files_downloaded: int = 0
+    files_deleted: int = 0
+    elapsed_seconds: float | None = None
+    performance: SyncPerformance | None = None
 
 
 class SyncStatusResponse(ApiModel):
@@ -110,6 +157,23 @@ class SyncStatusResponse(ApiModel):
     files_changed: int = 0
     reports_found: int = 0
     status: str = "idle"
+    job_type: Literal["sync"] = "sync"
+    requested_by: str = "nexus-web"
+    requested_at: datetime | None = None
+    current_phase: str | None = None
+    current_project: str | None = None
+    progress: float | None = None
+    process_id: int | None = None
+    appliance_run_id: str | None = None
+    run_mode: RunMode = "sync_only"
+    event_code: str | None = None
+    sync_strategy: SyncStrategy = "unknown"
+    sync_strategy_reason: str | None = None
+    remote_items_examined: int = 0
+    files_downloaded: int = 0
+    files_deleted: int = 0
+    elapsed_seconds: float | None = None
+    performance: SyncPerformance | None = None
 
 
 class AnalysisStatusResponse(ApiModel):
@@ -136,3 +200,13 @@ class AnalysisStatusResponse(ApiModel):
     project_name: str | None = None
     status: Literal["idle", "startup_pending", "running", "completed", "failed", "auth_failed", "sync_failed"] = "idle"
     analysis_started: bool = False
+    job_type: Literal["analysis"] = "analysis"
+    requested_by: str = "nexus-web"
+    requested_at: datetime | None = None
+    current_phase: str | None = None
+    current_project: str | None = None
+    progress: float | None = None
+    process_id: int | None = None
+    appliance_run_id: str | None = None
+    run_mode: RunMode = "analysis"
+    event_code: str | None = None

@@ -457,8 +457,11 @@ export async function createProjectFolder(projectName: string, payload: FolderCr
   return sendJson<FolderCreateResponse>(projectUrl(projectName, "files/folders"), payload);
 }
 
-export async function runSync(): Promise<SyncRunResponse> {
-  return sendJson<SyncRunResponse>("/sync/run");
+export async function runSync(options: { projectName?: string | null; idempotencyKey?: string | null } = {}): Promise<SyncRunResponse> {
+  return sendJson<SyncRunResponse>("/sync/start", {
+    project_name: options.projectName ?? null,
+    idempotency_key: options.idempotencyKey ?? null,
+  });
 }
 
 export async function getSyncStatus(): Promise<SyncStatusResponse> {
@@ -466,7 +469,7 @@ export async function getSyncStatus(): Promise<SyncStatusResponse> {
 }
 
 export async function runAnalysis(payload: AnalysisRunRequest): Promise<AnalysisRunResponse> {
-  return sendJson<AnalysisRunResponse>("/analysis/run", payload);
+  return sendJson<AnalysisRunResponse>("/analysis/start", payload);
 }
 
 export async function getAnalysisStatus(): Promise<AnalysisStatusResponse> {

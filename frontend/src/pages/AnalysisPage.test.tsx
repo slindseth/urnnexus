@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppDataContext } from "../context/AppDataContext";
 import * as api from "../lib/api";
 import { createProjectViewModel } from "../lib/projects";
-import type { AnalysisRunResponse, AnalysisStatusResponse, HealthResponse, ProjectSummary } from "../types";
+import type { AnalysisRunResponse, AnalysisStatusResponse, HealthResponse, ProjectSummary, SyncStatusResponse } from "../types";
 import { AnalysisPage, AnalysisRunDialog } from "./AnalysisPage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -176,9 +176,31 @@ function makeAnalysisRunResponse(overrides: Partial<AnalysisRunResponse> = {}): 
   };
 }
 
+function makeIdleSyncStatus(overrides: Partial<SyncStatusResponse> = {}): SyncStatusResponse {
+  return {
+    running: false,
+    process_alive: false,
+    lock_exists: false,
+    lock_stale: false,
+    activity: "idle",
+    job_id: "sync-job",
+    last_started_at: null,
+    last_completed_at: null,
+    last_error: null,
+    projects_synced: 0,
+    files_changed: 0,
+    reports_found: 0,
+    status: "idle",
+    job_type: "sync",
+    run_mode: "sync_only",
+    ...overrides,
+  };
+}
+
 function renderAnalysisPage(
   analysisStatuses: AnalysisStatusResponse[] = [makeIdleAnalysisStatus()],
   runResponse: AnalysisRunResponse = makeAnalysisRunResponse(),
+  syncStatus: SyncStatusResponse = makeIdleSyncStatus(),
 ) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -190,6 +212,7 @@ function renderAnalysisPage(
     getAnalysisStatusSpy.mockResolvedValueOnce(status);
   }
   getAnalysisStatusSpy.mockResolvedValue(analysisStatuses[analysisStatuses.length - 1] ?? makeIdleAnalysisStatus());
+  const getSyncStatusSpy = vi.spyOn(api, "getSyncStatus").mockResolvedValue(syncStatus);
 
   const runAnalysisSpy = vi.spyOn(api, "runAnalysis").mockResolvedValue(runResponse);
   const refreshSpy = vi.fn();
@@ -216,7 +239,7 @@ function renderAnalysisPage(
     );
   });
 
-  return { container, refreshSpy, runAnalysisSpy, getAnalysisStatusSpy };
+  return { container, refreshSpy, runAnalysisSpy, getAnalysisStatusSpy, getSyncStatusSpy };
 }
 
 function clickButton(container: HTMLElement, label: string) {
@@ -294,6 +317,31 @@ describe("AnalysisPage", () => {
     expect(markup).toContain("Legg resultat i daglig digest");
     expect(markup).toContain("Send e-post når rapportene er ferdige");
     expect(markup).toContain("Start analyse");
+  });
+
+  it("disables analysis while a sync job is active", async () => {
+    const { container, runAnalysisSpy } = renderAnalysisPage(
+      [makeIdleAnalysisStatus()],
+      makeAnalysisRunResponse(),
+      makeIdleSyncStatus({
+        running: true,
+        process_alive: true,
+        lock_exists: true,
+        activity: "sync",
+        status: "running",
+        current_phase: "Henter endringer",
+        run_mode: "sync_only",
+      }),
+    );
+
+    await flushMicrotasks(3);
+
+    const analyzeAllButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Analyser alle prosjekter");
+    expect(analyzeAllButton).toBeDefined();
+    expect((analyzeAllButton as HTMLButtonElement).disabled).toBe(true);
+    expect(container.textContent).toContain("Synkronisering pågår");
+    expect(container.textContent).toContain("Analyse kan startes når synkronisering er ferdig");
+    expect(runAnalysisSpy).not.toHaveBeenCalled();
   });
 
   it("keeps the startup state visible when the first status poll returns a stale idle response", async () => {

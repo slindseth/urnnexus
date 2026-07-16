@@ -66,6 +66,31 @@ async function readApplianceStatus(): Promise<ApplianceStatusSnapshot> {
   return { syncStatus, analysisStatus };
 }
 
+function resolveLiveApplianceActivity(syncStatus: SyncStatusResponse, analysisStatus: AnalysisStatusResponse): {
+  activity: "sync" | "analysis" | "idle";
+  syncRunning: boolean;
+  analysisRunning: boolean;
+} {
+  const analysisStartupBusy = analysisStatus.status === "startup_pending" || analysisStatus.startup_grace_active;
+  const syncRunning = Boolean(
+    syncStatus.running ||
+      syncStatus.process_alive ||
+      syncStatus.status === "startup_pending" ||
+      (syncStatus.job_type === "sync" && syncStatus.activity === "sync"),
+  );
+  const analysisRunning = Boolean(
+    analysisStatus.running ||
+      analysisStatus.process_alive ||
+      analysisStartupBusy ||
+      (analysisStatus.job_type === "analysis" && analysisStatus.activity === "analysis"),
+  );
+  return {
+    activity: syncRunning ? "sync" : analysisRunning ? "analysis" : "idle",
+    syncRunning,
+    analysisRunning,
+  };
+}
+
 function isValidStatusSnapshot(snapshot: ApplianceStatusSnapshot): boolean {
   const syncStatus = snapshot.syncStatus?.status?.trim().toLowerCase();
   const analysisStatus = snapshot.analysisStatus?.status?.trim().toLowerCase();
@@ -535,10 +560,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        const { syncRunning, analysisRunning } = resolveLiveApplianceActivity(syncStatus, analysisStatus);
         const analysisStartupBusy = analysisStatus.status === "startup_pending" || analysisStatus.startup_grace_active;
-        const applianceActivity = syncStatus.activity !== "idle" ? syncStatus.activity : analysisStartupBusy ? "analysis" : analysisStatus.activity;
-        const syncRunning = syncStatus.running || (syncStatus.lock_exists && applianceActivity === "sync");
-        const analysisRunning = analysisStatus.running || analysisStartupBusy || (analysisStatus.lock_exists && applianceActivity === "analysis");
         const anyLiveLock = syncStatus.lock_exists || analysisStatus.lock_exists || analysisStartupBusy;
 
         if (syncRunning) {
@@ -699,9 +722,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             return;
           }
 
-          const applianceActivity = syncStatus.activity !== "idle" ? syncStatus.activity : analysisStatus.activity;
-          const syncRunning = syncStatus.running || (syncStatus.lock_exists && applianceActivity === "sync");
-          const analysisRunning = analysisStatus.running || (analysisStatus.lock_exists && applianceActivity === "analysis");
+          const { syncRunning, analysisRunning } = resolveLiveApplianceActivity(syncStatus, analysisStatus);
           const anyLiveLock = syncStatus.lock_exists || analysisStatus.lock_exists;
           const explicitFailureCode = syncStatus.error_code ?? analysisStatus.error_code ?? null;
 
@@ -780,9 +801,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         const backendLockError = isLockBusyError(syncStatus.last_error);
         const storedLockError = isLockBusyError(storedRecord?.last_error);
         const activeStoredRecord = backendLockError || storedLockError ? null : storedRecord;
-        const applianceActivity = syncStatus.activity !== "idle" ? syncStatus.activity : analysisStatus.activity;
-        const syncRunning = syncStatus.running || (syncStatus.lock_exists && applianceActivity === "sync");
-        const analysisRunning = analysisStatus.running || (analysisStatus.lock_exists && applianceActivity === "analysis");
+        const { syncRunning, analysisRunning } = resolveLiveApplianceActivity(syncStatus, analysisStatus);
         const anyLiveLock = syncStatus.lock_exists || analysisStatus.lock_exists;
 
         if (syncRunning) {

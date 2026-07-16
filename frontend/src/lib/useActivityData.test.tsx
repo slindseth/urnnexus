@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { useActivityData } from "./useActivityData";
-import type { ActivityEventsResponse, ActivityLogsResponse, ActivityStatusResponse } from "../types";
+import type { ActivityEventsResponse, ActivityLogsResponse, ActivityStatusResponse, SyncStatusResponse } from "../types";
 
 let mountedRoot: Root | null = null;
 
@@ -56,6 +56,26 @@ function makeLogs(updatedAt: string): ActivityLogsResponse {
   };
 }
 
+function makeSyncStatus(updatedAt: string): SyncStatusResponse {
+  return {
+    running: false,
+    process_alive: false,
+    lock_exists: false,
+    lock_stale: false,
+    activity: "idle",
+    job_id: "sync-job",
+    last_started_at: updatedAt,
+    last_completed_at: updatedAt,
+    last_error: null,
+    projects_synced: 0,
+    files_changed: 0,
+    reports_found: 0,
+    status: "completed",
+    job_type: "sync",
+    run_mode: "sync_only",
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   act(() => {
@@ -82,6 +102,10 @@ describe("useActivityData", () => {
       .spyOn(api, "getActivityLogs")
       .mockResolvedValueOnce(makeLogs("2026-06-30T08:00:00+02:00"))
       .mockResolvedValue(makeLogs("2026-06-30T08:00:04+02:00"));
+    const syncStatusSpy = vi
+      .spyOn(api, "getSyncStatus")
+      .mockResolvedValueOnce(makeSyncStatus("2026-06-30T08:00:00+02:00"))
+      .mockResolvedValue(makeSyncStatus("2026-06-30T08:00:04+02:00"));
 
     let latestState: unknown = null;
     const container = document.createElement("div");
@@ -98,6 +122,7 @@ describe("useActivityData", () => {
     expect(statusSpy).toHaveBeenCalledTimes(1);
     expect(eventsSpy).toHaveBeenCalledTimes(1);
     expect(logsSpy).toHaveBeenCalledTimes(1);
+    expect(syncStatusSpy).toHaveBeenCalledTimes(1);
     expect((latestState as { status?: ActivityStatusResponse | null })?.status?.updated_at).toBe("2026-06-30T08:00:00+02:00");
 
     await act(async () => {
@@ -108,6 +133,7 @@ describe("useActivityData", () => {
     expect(statusSpy).toHaveBeenCalledTimes(2);
     expect(eventsSpy).toHaveBeenCalledTimes(2);
     expect(logsSpy).toHaveBeenCalledTimes(2);
+    expect(syncStatusSpy).toHaveBeenCalledTimes(2);
     expect((latestState as { status?: ActivityStatusResponse | null })?.status?.updated_at).toBe("2026-06-30T08:00:04+02:00");
   });
 });

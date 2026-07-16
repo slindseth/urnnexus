@@ -21,6 +21,7 @@ import type { AnalysisStatusResponse, HealthResponse, ProjectSummary, SyncStatus
 import {
   DashboardPage,
   getSyncLastErrorMessage,
+  isSyncStatusForCurrentJob,
   isSyncBusyLockError,
   resolveDashboardLastSyncedAt,
 } from "./DashboardPage";
@@ -195,6 +196,13 @@ afterEach(() => {
 });
 
 describe("DashboardPage", () => {
+  it("accepts status only from the current sync job once a job id is known", () => {
+    expect(isSyncStatusForCurrentJob(makeSyncStatus({ job_id: "sync-job" }), "sync-job")).toBe(true);
+    expect(isSyncStatusForCurrentJob(makeSyncStatus({ job_id: "old-sync-job" }), "sync-job")).toBe(false);
+    expect(isSyncStatusForCurrentJob(makeSyncStatus({ job_id: null }), "sync-job")).toBe(false);
+    expect(isSyncStatusForCurrentJob(makeSyncStatus({ job_id: "old-sync-job" }), null)).toBe(true);
+  });
+
   it("prefers the completed sync timestamp over health for the top sync display", () => {
     const syncStatus: SyncStatusResponse = {
       running: false,

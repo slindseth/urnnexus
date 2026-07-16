@@ -11,7 +11,7 @@ import re
 import shutil
 import sqlite3
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol
@@ -41,6 +41,7 @@ from backend.app.models.operations import (
     ProjectCreateResponse,
     ProjectDeleteResponse,
     ProjectLocalCacheDeleteResponse,
+    SyncPerformance,
     SyncRunResponse,
     SyncStatusResponse,
 )
@@ -544,10 +545,27 @@ class ProjectRecord:
 
 
 @dataclass(slots=True)
-class SyncJobState:
-    running: bool = False
+class NexusJobState:
+    job_type: str = "sync"
     job_id: str | None = None
+    requested_by: str = "nexus-web"
+    requested_at: datetime | None = None
+    status: str = "idle"
+    current_phase: str | None = None
+    current_project: str | None = None
+    progress: float | None = None
     process: subprocess.Popen[str] | None = None
+    process_id: int | None = None
+    appliance_run_id: str | None = None
+    run_mode: str = "unknown"
+    event_code: str | None = None
+
+
+@dataclass(slots=True)
+class SyncJobState(NexusJobState):
+    job_type: str = "sync"
+    run_mode: str = "sync_only"
+    running: bool = False
     last_started_at: datetime | None = None
     last_completed_at: datetime | None = None
     last_error: str | None = None
@@ -555,14 +573,20 @@ class SyncJobState:
     files_changed: int = 0
     reports_found: int = 0
     project_name: str | None = None
-    status: str = "idle"
+    sync_strategy: str = "unknown"
+    sync_strategy_reason: str | None = None
+    remote_items_examined: int = 0
+    files_downloaded: int = 0
+    files_deleted: int = 0
+    elapsed_seconds: float | None = None
+    performance: SyncPerformance | None = None
 
 
 @dataclass(slots=True)
-class AnalysisJobState:
+class AnalysisJobState(NexusJobState):
+    job_type: str = "analysis"
+    run_mode: str = "analysis"
     running: bool = False
-    job_id: str | None = None
-    process: subprocess.Popen[str] | None = None
     start_requested_at: datetime | None = None
     last_started_at: datetime | None = None
     last_completed_at: datetime | None = None
@@ -576,7 +600,6 @@ class AnalysisJobState:
     reports_generated: int = 0
     email_mode: str | None = None
     project_name: str | None = None
-    status: str = "idle"
 
 
 @dataclass(slots=True)
@@ -604,6 +627,13 @@ class ActivityEntryCandidate:
     component: str | None = None
     order: int = 0
     kind: str = "log"
+    category: str = "System"
+    source: str = "System"
+    event_code: str | None = None
+    phase: str | None = None
+    run_mode: str = "unknown"
+    job_type: str | None = None
+    job_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -899,6 +929,8 @@ class ApplianceService:
         self._sync_state = SyncJobState()
         self._analysis_lock = threading.Lock()
         self._analysis_state = AnalysisJobState()
+        self._job_history: list[NexusJobState] = []
+        self._last_sync_idempotency_key: str | None = None
         self._health_cache_lock = threading.Lock()
         self._health_cache_timestamp = 0.0
         self._health_cache: HealthResponse | None = None
@@ -1055,6 +1087,7 @@ class ApplianceService:
         current_payload = next((payload for payload in payloads if payload.get("source") == "current"), {})
         project_name = self._activity_current_project_name(sync_status=sync_status, analysis_status=analysis_status, payloads=payloads)
         state, activity, status, component = self._activity_state(sync_status=sync_status, analysis_status=analysis_status, payloads=payloads)
+        active_job = self._activity_active_job(sync_status=sync_status, analysis_status=analysis_status)
         if not activity:
             activity = "Ingen aktiv jobb"
         if not status:
@@ -1072,6 +1105,16 @@ class ApplianceService:
             last_synced_at=health.last_synced_at,
             last_analyzed_at=health.last_analyzed_at,
             updated_at=captured_at,
+            job_type=active_job.job_type if active_job else None,
+            job_id=active_job.job_id if active_job else None,
+            run_mode=active_job.run_mode if active_job else "unknown",  # type: ignore[arg-type]
+            event_code=active_job.event_code if active_job else None,
+            current_phase=active_job.current_phase if active_job else None,
+            current_project=active_job.current_project if active_job else project_name,
+            progress=active_job.progress if active_job else None,
+            sync_strategy=active_job.sync_strategy if isinstance(active_job, SyncStatusResponse) else "unknown",  # type: ignore[arg-type]
+            sync_strategy_reason=active_job.sync_strategy_reason if isinstance(active_job, SyncStatusResponse) else None,
+            performance=active_job.performance if isinstance(active_job, SyncStatusResponse) else None,
         )
 
     def _activity_state(
@@ -1081,45 +1124,86 @@ class ApplianceService:
         analysis_status: AnalysisStatusResponse,
         payloads: list[dict[str, Any]],
     ) -> tuple[ActivityState, str | None, str | None, str | None]:
-        latest_message = self._activity_latest_message(payloads)
-        latest_component = self._activity_latest_component(payloads)
+        active_job = self._activity_active_job(sync_status=sync_status, analysis_status=analysis_status)
+        if isinstance(active_job, SyncStatusResponse):
+            state = self._sync_activity_state(active_job, payloads)
+            return state, "OneDrive Sync", active_job.current_phase or self._sync_activity_status(active_job, state), "OneDrive"
+        if isinstance(active_job, AnalysisStatusResponse):
+            if active_job.status == "startup_pending" or active_job.startup_grace_active:
+                return "Starter", "Analysis", active_job.current_phase or "Starter analyse", "Analysis"
+            if active_job.status in {"failed", "auth_failed", "sync_failed"}:
+                return "Feilet", "Analysis", active_job.current_phase or "Analyse feilet", "Analysis"
+            return "Analyserer", "Analysis", active_job.current_phase or "Analyserer dokumenter", "Analysis"
 
-        if self._activity_has_meaningful_error(sync_status=sync_status, analysis_status=analysis_status, payloads=payloads):
-            error_message = self._activity_primary_error_message(sync_status=sync_status, analysis_status=analysis_status, payloads=payloads)
-            return "Feilet", self._activity_activity_label("Feilet", latest_component), error_message, latest_component
+        if analysis_status.status in {"failed", "auth_failed", "sync_failed"} and analysis_status.last_error:
+            return "Feilet", self._activity_latest_component(payloads) or "Analysis", analysis_status.last_error, "Analysis"
+        if sync_status.status in {"failed", "error"} and sync_status.last_error:
+            return "Synkronisering feilet", "Sync", "Synkronisering feilet", "OneDrive"
+        return "Klar", None, "Ingen aktiv jobb", None
 
-        if analysis_status.status == "startup_pending" or analysis_status.startup_grace_active:
-            return "Starter", self._activity_activity_label("Starter", latest_component), self._activity_default_status_for_state("Starter"), latest_component
+    def _activity_active_job(
+        self,
+        *,
+        sync_status: SyncStatusResponse,
+        analysis_status: AnalysisStatusResponse,
+    ) -> SyncStatusResponse | AnalysisStatusResponse | None:
+        sync_active = sync_status.running or sync_status.process_alive or sync_status.status == "startup_pending" or sync_status.activity == "sync"
+        analysis_active = analysis_status.running or analysis_status.process_alive or analysis_status.status == "startup_pending" or analysis_status.startup_grace_active or analysis_status.activity == "analysis"
+        if sync_active:
+            return sync_status
+        if analysis_active:
+            return analysis_status
+        return None
 
-        if sync_status.running or sync_status.process_alive or sync_status.lock_exists:
-            return "Synkroniserer", self._activity_activity_label("Synkroniserer", latest_component or "OneDrive"), self._activity_default_status_for_state("Synkroniserer"), latest_component or "OneDrive"
+    def _sync_activity_state(self, status: SyncStatusResponse, payloads: list[dict[str, Any]]) -> ActivityState:
+        event_code = status.event_code or self._latest_structured_value(payloads, status.job_id, "event_code")
+        if status.status in {"failed", "error"} or event_code == "sync_failed":
+            return "Synkronisering feilet"
+        if event_code == "sync_completed_no_changes":
+            return "Synkronisering fullført uten endringer"
+        if event_code == "sync_completed" or status.status in {"completed", "skipped_no_changes", "success"}:
+            return "Synkronisering fullført"
+        phase = status.current_phase or self._latest_structured_value(payloads, status.job_id, "phase")
+        allowed_phases = {
+            "Starter synkronisering",
+            "Kobler til OneDrive",
+            "Henter endringer",
+            "Synkroniserer prosjekt",
+            "Laster ned filer",
+            "Oppdaterer lokal status",
+            "Fullfører synkronisering",
+        }
+        if phase in allowed_phases:
+            return phase  # type: ignore[return-value]
+        return "Starter synkronisering" if status.status == "startup_pending" else "Synkroniserer"
 
-        if analysis_status.running or analysis_status.process_alive or analysis_status.lock_exists or analysis_status.status == "running":
-            state = self._activity_stage_from_payloads(payloads) or "Analyserer"
-            activity = self._activity_activity_label(state, latest_component or "Analyse")
-            status = self._activity_default_status_for_state(state)
-            component = latest_component or self._activity_component_for_state(state)
-            return state, activity, status, component
+    def _sync_activity_status(self, status: SyncStatusResponse, state: ActivityState) -> str:
+        if state == "Starter synkronisering":
+            return "Starter synkronisering"
+        if state == "Synkroniserer":
+            return "Synkroniserer dokumenter"
+        return state
 
-        return "Klar", None, "Ingen aktiv jobb", latest_component
+    def _latest_structured_value(self, payloads: list[dict[str, Any]], job_id: str | None, key: str) -> str | None:
+        for payload in reversed(payloads):
+            payload_job_id = str(payload.get("job_id") or "").strip() or None
+            if job_id and payload_job_id and payload_job_id != job_id:
+                continue
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return None
 
     def _activity_stage_from_payloads(self, payloads: list[dict[str, Any]]) -> ActivityState | None:
-        for payload in payloads:
-            source = str(payload.get("source") or "").casefold()
-            if source not in {"current", "journal"}:
-                continue
-            messages = [str(payload.get("message") or "").casefold()]
-            messages.extend(str(message).casefold() for message in self._payload_messages(payload, "warnings"))
-            messages.extend(str(message).casefold() for message in self._payload_messages(payload, "errors"))
-            for message in messages:
-                if not message.strip():
-                    continue
-                if "e-post" in message or "email" in message:
-                    return "Sender e-post"
-                if "rapport" in message or "upload" in message:
-                    return "Genererer rapport"
-                if "analyser" in message or "analyse" in message or "ocr" in message or "document" in message:
-                    return "Analyserer"
+        for payload in reversed(payloads):
+            phase = str(payload.get("phase") or payload.get("current_phase") or "").strip()
+            if phase in {
+                "Starter analyse",
+                "Analyserer dokumenter",
+                "Genererer rapport",
+                "Sender e-post",
+            }:
+                return phase  # type: ignore[return-value]
         return None
 
     def _activity_activity_label(self, state: ActivityState | str, component: str | None) -> str | None:
@@ -1179,11 +1263,15 @@ class ApplianceService:
         analysis_status: AnalysisStatusResponse,
         payloads: list[dict[str, Any]],
     ) -> str | None:
-        for candidate in (
-            self._sync_state.project_name,
-            analysis_status.project_name,
+        active_job = self._activity_active_job(sync_status=sync_status, analysis_status=analysis_status)
+        active_project = active_job.current_project if active_job else None
+        candidates = (
+            active_project,
+            sync_status.current_project if isinstance(active_job, SyncStatusResponse) else None,
+            analysis_status.current_project if isinstance(active_job, AnalysisStatusResponse) else None,
             self._activity_latest_project_name(payloads),
-        ):
+        )
+        for candidate in candidates:
             if candidate and str(candidate).strip():
                 return str(candidate).strip()
         return None
@@ -1267,6 +1355,7 @@ class ApplianceService:
         health: HealthResponse,
         captured_at: datetime,
     ) -> list[dict[str, Any]]:
+        active_job = self._activity_active_job(sync_status=sync_status, analysis_status=analysis_status)
         payloads: list[dict[str, Any]] = [
             {
                 "source": "current",
@@ -1285,6 +1374,17 @@ class ApplianceService:
                 "sync_status": sync_status.status,
                 "analysis_status": analysis_status.status,
                 "status": analysis_status.status,
+                "job_type": active_job.job_type if active_job else None,
+                "job_id": active_job.job_id if active_job else None,
+                "run_mode": active_job.run_mode if active_job else "unknown",
+                "event_code": active_job.event_code if active_job else None,
+                "current_phase": active_job.current_phase if active_job else None,
+                "current_project": active_job.current_project if active_job else None,
+                "progress": active_job.progress if active_job else None,
+                "sync_strategy": active_job.sync_strategy if isinstance(active_job, SyncStatusResponse) else "unknown",
+                "sync_strategy_reason": active_job.sync_strategy_reason if isinstance(active_job, SyncStatusResponse) else None,
+                "category": "Sync" if isinstance(active_job, SyncStatusResponse) else "Analysis" if isinstance(active_job, AnalysisStatusResponse) else "System",
+                "semantic_source": "Sync" if isinstance(active_job, SyncStatusResponse) else "Analysis" if isinstance(active_job, AnalysisStatusResponse) else "System",
                 "health": {
                     "appliance_available": health.appliance_available,
                     "backend_version": health.version,
@@ -1339,11 +1439,15 @@ class ApplianceService:
         verbose: bool,
         order_start: int,
     ) -> list[ActivityEntryCandidate]:
+        details = payload.get("details")
+        if isinstance(details, Mapping):
+            payload = {**details, **payload}
         source = str(payload.get("source") or "history").casefold()
         timestamp = self._activity_payload_timestamp(payload) or datetime.now(OSLO_TIMEZONE)
         project_name = self._activity_payload_project_name(payload)
         component = self._activity_payload_component(payload)
         level = str(payload.get("level") or "INFO").upper()
+        structured = self._activity_structured_fields(payload, level=level)
         candidates: list[ActivityEntryCandidate] = []
 
         if source == "current":
@@ -1364,6 +1468,7 @@ class ApplianceService:
                     component=component,
                     order=order_start,
                     kind=str(payload.get("kind") or ("log" if verbose else "event")),
+                    **structured,
                 )
             )
             return candidates
@@ -1377,10 +1482,14 @@ class ApplianceService:
         verbose: bool,
         order_start: int,
     ) -> list[ActivityEntryCandidate]:
+        details = payload.get("details")
+        if isinstance(details, Mapping):
+            payload = {**details, **payload}
         timestamp = self._activity_payload_timestamp(payload) or datetime.now(OSLO_TIMEZONE)
         project_name = self._activity_payload_project_name(payload)
         component = self._activity_payload_component(payload)
         status = str(payload.get("status") or "").casefold()
+        structured = self._activity_structured_fields(payload, level=str(payload.get("level") or "INFO").upper())
         warnings = self._dedupe_messages(self._payload_messages(payload, "warnings"))
         errors = self._dedupe_messages(self._payload_messages(payload, "errors"))
         uploaded_reports = payload.get("uploaded_reports") if isinstance(payload.get("uploaded_reports"), list) else []
@@ -1395,6 +1504,16 @@ class ApplianceService:
         def add(level: ActivityLevel, message: str, *, offset: int, kind: str = "event", component_override: str | None = None) -> None:
             if not message.strip():
                 return
+            candidate_fields = dict(structured)
+            if level == "ERROR":
+                candidate_fields["category"] = "Error"
+                candidate_fields["source"] = "Error"
+            elif component_override in {"OneDrive", "Microsoft Graph"}:
+                candidate_fields["category"] = "OneDrive"
+                candidate_fields["source"] = "OneDrive"
+            elif component_override in {"Reports", "Report"}:
+                candidate_fields["category"] = "Report"
+                candidate_fields["source"] = "Report"
             candidates.append(
                 ActivityEntryCandidate(
                     timestamp=timestamp,
@@ -1404,12 +1523,13 @@ class ApplianceService:
                     component=component_override or component,
                     order=order_start + offset,
                     kind=kind,
+                    **candidate_fields,
                 )
             )
 
         if status in {"failed", "error"}:
             error_message = self._payload_error_message(payload) or "Operasjonen feilet."
-            add("ERROR", error_message, offset=0, kind="error", component_override=component or self._infer_component(error_message))
+            add("ERROR", error_message, offset=0, kind="error", component_override=component or structured["source"])
             return candidates
 
         if verbose:
@@ -1434,9 +1554,9 @@ class ApplianceService:
                 add("INFO", "Email sent", offset=2, component_override="E-post")
 
         for index, warning in enumerate(warnings, start=10):
-            add("WARNING", warning, offset=index, kind="warning", component_override=self._infer_component(warning))
+            add("WARNING", warning, offset=index, kind="warning", component_override=component or structured["source"])
         for index, error in enumerate(errors, start=20):
-            add("ERROR", error, offset=index, kind="error", component_override=self._infer_component(error))
+            add("ERROR", error, offset=index, kind="error", component_override=component or structured["source"])
 
         return candidates
 
@@ -1452,6 +1572,13 @@ class ApplianceService:
                     project_name=candidate.project_name,
                     component=candidate.component,
                     message=candidate.message,
+                    category=candidate.category,  # type: ignore[arg-type]
+                    source=candidate.source,
+                    event_code=candidate.event_code,
+                    phase=candidate.phase,
+                    run_mode=candidate.run_mode,  # type: ignore[arg-type]
+                    job_type=candidate.job_type,  # type: ignore[arg-type]
+                    job_id=candidate.job_id,
                 )
             )
         return events
@@ -1469,6 +1596,12 @@ class ApplianceService:
                     project_name=candidate.project_name,
                     component=candidate.component,
                     message=candidate.message,
+                    source=candidate.source,
+                    event_code=candidate.event_code,
+                    phase=candidate.phase,
+                    run_mode=candidate.run_mode,  # type: ignore[arg-type]
+                    job_type=candidate.job_type,  # type: ignore[arg-type]
+                    job_id=candidate.job_id,
                 )
             )
         return errors
@@ -1485,6 +1618,13 @@ class ApplianceService:
                     project_name=candidate.project_name,
                     component=candidate.component,
                     message=candidate.message,
+                    category=candidate.category,  # type: ignore[arg-type]
+                    source=candidate.source,
+                    event_code=candidate.event_code,
+                    phase=candidate.phase,
+                    run_mode=candidate.run_mode,  # type: ignore[arg-type]
+                    job_type=candidate.job_type,  # type: ignore[arg-type]
+                    job_id=candidate.job_id,
                 )
             )
         return logs
@@ -1533,7 +1673,27 @@ class ApplianceService:
             "kind": kind,
         }
         if details:
-            payload["details"] = dict(details)
+            normalized_details = dict(details)
+            payload["details"] = normalized_details
+            for key in (
+                "job_id",
+                "job_type",
+                "requested_by",
+                "requested_at",
+                "current_phase",
+                "current_project",
+                "progress",
+                "process_id",
+                "appliance_run_id",
+                "run_mode",
+                "event_code",
+                "sync_strategy",
+                "phase",
+                "category",
+                "semantic_source",
+            ):
+                if key in normalized_details:
+                    payload[key] = normalized_details[key]
 
         path = self._activity_journal_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1650,11 +1810,66 @@ class ApplianceService:
         return None
 
     def _activity_payload_component(self, payload: Mapping[str, Any]) -> str | None:
-        for key in ("component", "source", "stage"):
+        for key in ("component", "stage"):
             value = str(payload.get(key) or "").strip()
             if value:
-                return value.title() if key == "source" else value
+                return value
         return None
+
+    def _activity_structured_fields(self, payload: Mapping[str, Any], *, level: str) -> dict[str, Any]:
+        details = payload.get("details")
+        if isinstance(details, Mapping):
+            payload = {**details, **payload}
+        raw_run_mode = str(payload.get("run_mode") or payload.get("activity") or "").strip().casefold()
+        if raw_run_mode in {"sync_only", "sync", "synchronization", "synchronisation"}:
+            run_mode = "sync_only"
+            job_type = "sync"
+        elif raw_run_mode in {"analysis", "analyse"}:
+            run_mode = "analysis"
+            job_type = "analysis"
+        else:
+            run_mode = "unknown"
+            job_type_value = str(payload.get("job_type") or "").strip().casefold()
+            job_type = job_type_value if job_type_value in {"sync", "analysis"} else None
+
+        explicit_category = str(payload.get("category") or "").strip()
+        component = self._activity_payload_component(payload)
+        if level == "ERROR":
+            category = "Error"
+        elif explicit_category in {"Sync", "Analysis", "System", "OneDrive", "Report", "Error"}:
+            category = explicit_category
+        elif job_type == "sync":
+            category = "Sync"
+        elif job_type == "analysis":
+            category = "Analysis"
+        elif component in {"OneDrive", "Microsoft Graph"}:
+            category = "OneDrive"
+        elif component in {"Analysis", "Analyse", "OCR"}:
+            category = "Analysis"
+        elif component in {"Reports", "Report"}:
+            category = "Report"
+        else:
+            category = "System"
+
+        semantic_source = str(
+            payload.get("semantic_source")
+            or payload.get("source_label")
+            or payload.get("event_source")
+            or ""
+        ).strip()
+        allowed_sources = {"Sync", "Analysis", "System", "OneDrive", "Report", "Nexus", "Error"}
+        if semantic_source not in allowed_sources:
+            semantic_source = "Nexus" if str(payload.get("source") or "").strip() == "journal" and category == "System" else category
+
+        return {
+            "category": category,
+            "source": semantic_source,
+            "event_code": self._payload_text(payload, "event_code", "code"),
+            "phase": self._payload_text(payload, "phase", "current_phase", "stage"),
+            "run_mode": run_mode,
+            "job_type": job_type,
+            "job_id": self._payload_text(payload, "job_id"),
+        }
 
     def _infer_component(self, message: str | None) -> str | None:
         lowered = str(message or "").casefold()
@@ -2101,19 +2316,94 @@ class ApplianceService:
             detail = (result.stderr or result.stdout or "OneDrive-sync feilet.").strip()[-2000:]
             raise ProjectSyncError(f"OneDrive-sync feilet etter prosjektopprettelse: {detail}")
 
-    def start_sync(self) -> SyncRunResponse:
+    def _job_details(self, state: NexusJobState) -> dict[str, Any]:
+        return {
+            "job_id": state.job_id,
+            "job_type": state.job_type,
+            "requested_by": state.requested_by,
+            "requested_at": state.requested_at.isoformat() if state.requested_at else None,
+            "status": state.status,
+            "current_phase": state.current_phase,
+            "current_project": state.current_project,
+            "progress": state.progress,
+            "process_id": state.process_id,
+            "appliance_run_id": state.appliance_run_id,
+            "run_mode": state.run_mode,
+            "event_code": state.event_code,
+            "sync_strategy_reason": state.sync_strategy_reason if isinstance(state, SyncJobState) else None,
+        }
+
+    def _sync_run_response(self, *, status: str | None = None, started_at: datetime | None = None) -> SyncRunResponse:
+        state = self._sync_state
+        return SyncRunResponse(
+            job_id=state.job_id or "",
+            running=state.running or state.status in {"startup_pending", "running"},
+            started_at=started_at or state.last_started_at or state.requested_at or datetime.now(OSLO_TIMEZONE),
+            status=status or state.status,
+            sync_only=True,
+            analysis_started=False,
+            reports_generated=0,
+            projects_synced=state.projects_synced,
+            files_changed=state.files_changed,
+            reports_found=state.reports_found,
+            requested_by=state.requested_by,
+            requested_at=state.requested_at,
+            current_phase=state.current_phase,
+            current_project=state.current_project,
+            progress=state.progress,
+            process_id=state.process_id,
+            appliance_run_id=state.appliance_run_id,
+            run_mode="sync_only",
+            event_code=state.event_code,
+            sync_strategy=state.sync_strategy,  # type: ignore[arg-type]
+            sync_strategy_reason=state.sync_strategy_reason,
+            remote_items_examined=state.remote_items_examined,
+            files_downloaded=state.files_downloaded,
+            files_deleted=state.files_deleted,
+            elapsed_seconds=state.elapsed_seconds,
+            performance=state.performance,
+        )
+
+    def start_sync(
+        self,
+        *,
+        project_name: str | None = None,
+        requested_by: str = "nexus-web",
+        idempotency_key: str | None = None,
+    ) -> SyncRunResponse:
         with self._sync_lock, self._analysis_lock:
             snapshot = self._runtime_activity_snapshot_locked()
             self._refresh_sync_state_locked(snapshot=snapshot)
             self._refresh_analysis_state_locked(snapshot=snapshot)
+            if (
+                idempotency_key
+                and self._last_sync_idempotency_key == idempotency_key
+                and self._sync_state.job_id
+                and self._sync_state.status in {"startup_pending", "running"}
+            ):
+                return self._sync_run_response(status="already_running")
             if snapshot.sync_running or snapshot.analysis_running or snapshot.lock_exists:
                 raise ApplianceBusyError(APPLIANCE_BUSY_MESSAGE)
             self._require_sync_only_available()
 
-            command = self._sync_command()
+            normalized_project_name = self._clean_project_name(project_name) if project_name else None
+            command = self._sync_command(project_name=normalized_project_name)
             self._validate_nexus_sync_command(command)
             started_at = datetime.now(OSLO_TIMEZONE)
             job_id = uuid4().hex
+            self._sync_state = SyncJobState(
+                job_id=job_id,
+                requested_by=requested_by,
+                requested_at=started_at,
+                status="startup_pending",
+                current_phase="Starter synkronisering",
+                current_project=normalized_project_name,
+                project_name=normalized_project_name,
+                progress=0.0,
+                event_code="sync_started",
+                run_mode="sync_only",
+            )
+            self._last_sync_idempotency_key = idempotency_key
             try:
                 process = subprocess.Popen(
                     command,
@@ -2125,44 +2415,35 @@ class ApplianceService:
             except Exception as exc:
                 self._sync_state.last_error = str(exc)
                 self._sync_state.status = "failed"
+                self._sync_state.event_code = "sync_failed"
+                self._sync_state.current_phase = "Synkronisering feilet"
+                self._sync_state.last_completed_at = datetime.now(OSLO_TIMEZONE)
                 self._write_activity_journal(
                     level="ERROR",
                     message=str(exc),
                     project_name=None,
                     component="OneDrive",
                     kind="error",
+                    details=self._job_details(self._sync_state),
                 )
                 raise ProjectWriteError(f"Unable to start OneDrive sync: {exc}") from exc
 
-            self._sync_state = SyncJobState(
-                running=True,
-                job_id=job_id,
-                process=process,
-                last_started_at=started_at,
-                status="running",
-                project_name=None,
-            )
+            self._sync_state.running = True
+            self._sync_state.process = process
+            self._sync_state.process_id = getattr(process, "pid", None)
+            self._sync_state.last_started_at = started_at
+            self._sync_state.status = "running"
+            self._sync_state.current_phase = "Kobler til OneDrive"
             self._write_activity_journal(
                 level="INFO",
                 message="Starting OneDrive sync",
-                project_name=None,
+                project_name=normalized_project_name,
                 component="OneDrive",
                 kind="log",
-                details={"job_id": job_id},
+                details=self._job_details(self._sync_state),
             )
             threading.Thread(target=self._monitor_sync_process, args=(job_id, process), daemon=True).start()
-            return SyncRunResponse(
-                job_id=job_id,
-                running=True,
-                started_at=started_at,
-                status="started",
-                sync_only=True,
-                analysis_started=False,
-                reports_generated=0,
-                projects_synced=0,
-                files_changed=0,
-                reports_found=0,
-            )
+            return self._sync_run_response(status="started", started_at=started_at)
 
     def start_analysis(self, project_name: str | None, *, email_mode: str = "daily_digest") -> AnalysisRunResponse:
         normalized_email_mode = self._normalize_email_mode(email_mode)
@@ -2181,9 +2462,9 @@ class ApplianceService:
             started_at = datetime.now(OSLO_TIMEZONE)
             job_id = uuid4().hex
             self._analysis_state = AnalysisJobState(
-                running=False,
                 job_id=job_id,
-                process=None,
+                requested_by="nexus-web",
+                requested_at=started_at,
                 start_requested_at=started_at,
                 last_started_at=started_at,
                 process_spawned=False,
@@ -2191,6 +2472,10 @@ class ApplianceService:
                 last_error=None,
                 last_start_error=None,
                 status="startup_pending",
+                current_phase="Starter analyse",
+                current_project=normalized_project_name,
+                progress=0.0,
+                event_code="analysis_started",
                 email_mode=normalized_email_mode,
                 project_name=normalized_project_name,
             )
@@ -2200,7 +2485,7 @@ class ApplianceService:
                 project_name=normalized_project_name,
                 component="Analysis",
                 kind="log",
-                details={"job_id": job_id, "email_mode": normalized_email_mode},
+                details=self._job_details(self._analysis_state) | {"email_mode": normalized_email_mode},
             )
             try:
                 process = subprocess.Popen(
@@ -2220,16 +2505,19 @@ class ApplianceService:
                 self._analysis_state.last_completed_at = datetime.now(OSLO_TIMEZONE)
                 self._analysis_state.auth_status = auth_status
                 self._analysis_state.status = status
+                self._analysis_state.event_code = "analysis_failed"
                 self._write_activity_journal(
                     level="ERROR",
                     message=error_text,
                     project_name=normalized_project_name,
                     component="Analysis",
                     kind="error",
+                    details=self._job_details(self._analysis_state),
                 )
                 raise AnalysisUnavailableError(f"Unable to start appliance analysis: {exc}") from exc
 
             self._analysis_state.process = process
+            self._analysis_state.process_id = getattr(process, "pid", None)
             self._analysis_state.process_spawned = True
             threading.Thread(target=self._monitor_analysis_process, args=(job_id, process), daemon=True).start()
             return AnalysisRunResponse(
@@ -2244,6 +2532,13 @@ class ApplianceService:
                 reports_found=0,
                 email_mode=normalized_email_mode,
                 project_name=normalized_project_name,
+                requested_at=started_at,
+                current_phase="Starter analyse",
+                current_project=normalized_project_name,
+                progress=0.0,
+                process_id=getattr(process, "pid", None),
+                run_mode="analysis",
+                event_code="analysis_started",
             )
 
     def sync_status(self) -> SyncStatusResponse:
@@ -2252,12 +2547,13 @@ class ApplianceService:
             self._refresh_sync_state_locked(snapshot=snapshot)
             self._clear_stale_lock_error(self._sync_state, label="sync")
             error_code = "sync_failed" if self._sync_state.status in {"failed", "error"} and self._sync_state.last_error else None
+            sync_active = self._sync_state.status in {"startup_pending", "running"} or snapshot.sync_running
             return SyncStatusResponse(
-                running=snapshot.sync_running,
-                process_alive=snapshot.sync_running,
+                running=sync_active,
+                process_alive=sync_active,
                 lock_exists=snapshot.lock_exists,
                 lock_stale=snapshot.lock_stale,
-                activity=snapshot.activity,
+                activity="sync" if sync_active else "idle",
                 job_id=self._sync_state.job_id,
                 last_started_at=self._sync_state.last_started_at,
                 last_completed_at=self._sync_state.last_completed_at,
@@ -2267,6 +2563,22 @@ class ApplianceService:
                 files_changed=self._sync_state.files_changed,
                 reports_found=self._sync_state.reports_found,
                 status=self._sync_state.status,
+                requested_by=self._sync_state.requested_by,
+                requested_at=self._sync_state.requested_at,
+                current_phase=self._sync_state.current_phase,
+                current_project=self._sync_state.current_project,
+                progress=self._sync_state.progress,
+                process_id=self._sync_state.process_id,
+                appliance_run_id=self._sync_state.appliance_run_id,
+                run_mode="sync_only",
+                event_code=self._sync_state.event_code,
+                sync_strategy=self._sync_state.sync_strategy,  # type: ignore[arg-type]
+                sync_strategy_reason=self._sync_state.sync_strategy_reason,
+                remote_items_examined=self._sync_state.remote_items_examined,
+                files_downloaded=self._sync_state.files_downloaded,
+                files_deleted=self._sync_state.files_deleted,
+                elapsed_seconds=self._sync_state.elapsed_seconds,
+                performance=self._sync_state.performance,
             )
 
     def analysis_status(self) -> AnalysisStatusResponse:
@@ -2282,7 +2594,7 @@ class ApplianceService:
             )
             effective_running = self._analysis_state.running or snapshot.analysis_running
             effective_process_alive = self._is_process_active(self._analysis_state.process) or snapshot.analysis_running
-            effective_activity = snapshot.activity
+            effective_activity = "analysis" if effective_running or self._analysis_state.status == "startup_pending" else "idle"
             if self._analysis_state.status == "startup_pending" or effective_running:
                 effective_activity = "analysis"
 
@@ -2328,6 +2640,15 @@ class ApplianceService:
                 project_name=self._analysis_state.project_name,
                 status=effective_status,  # type: ignore[arg-type]
                 analysis_started=bool(self._analysis_state.start_requested_at or effective_running),
+                requested_by=self._analysis_state.requested_by,
+                requested_at=self._analysis_state.requested_at,
+                current_phase=self._analysis_state.current_phase,
+                current_project=self._analysis_state.current_project,
+                progress=self._analysis_state.progress,
+                process_id=self._analysis_state.process_id,
+                appliance_run_id=self._analysis_state.appliance_run_id,
+                run_mode="analysis",
+                event_code=self._analysis_state.event_code,
             )
 
     def _clear_stale_lock_error(self, state: SyncJobState | AnalysisJobState, *, label: str) -> None:
@@ -2375,7 +2696,7 @@ class ApplianceService:
         if "--force-analyze" in lowered or "analyze_project.py" in lowered:
             return "analysis"
         if "run_onedrive_appliance.py" in lowered:
-            return "analysis" if "--force-analyze" in lowered else "sync" if "--sync-only" in lowered else "analysis"
+            return "sync" if "--sync-only" in lowered else "idle"
         return "idle"
 
     def _runtime_activity_snapshot_locked(self) -> RuntimeActivitySnapshot:
@@ -4262,6 +4583,10 @@ class ApplianceService:
             "--once",
             "--all-roots",
             "--sync-only",
+            "--trigger-source",
+            "nexus_sync",
+            "--started-by",
+            "nexus-web",
             "--company-root",
             self.settings.onedrive_project_root(),
         ]
@@ -4292,6 +4617,13 @@ class ApplianceService:
             if email_mode in {"immediate", "daily_digest"}:
                 raise ProjectSyncError(f"Nexus sync-kommando inneholder forbudt email-mode: {email_mode}")
 
+        trigger_index = command_values.index("--trigger-source") if "--trigger-source" in command_values else -1
+        if trigger_index < 0 or trigger_index + 1 >= len(command_values) or command_values[trigger_index + 1] != "nexus_sync":
+            raise ProjectSyncError("Nexus sync-kommando mangler strukturert trigger-source nexus_sync")
+        started_by_index = command_values.index("--started-by") if "--started-by" in command_values else -1
+        if started_by_index < 0 or started_by_index + 1 >= len(command_values) or command_values[started_by_index + 1] != "nexus-web":
+            raise ProjectSyncError("Nexus sync-kommando mangler strukturert started-by nexus-web")
+
     def _normalize_email_mode(self, email_mode: str | None) -> str:
         normalized = str(email_mode or "").strip().casefold()
         if normalized not in {"daily_digest", "immediate"}:
@@ -4315,7 +4647,7 @@ class ApplianceService:
             "--email-mode",
             email_mode,
             "--trigger-source",
-            "nexus_sync",
+            "nexus_analysis",
             "--started-by",
             "nexus-web",
             "--company-root",
@@ -4343,6 +4675,9 @@ class ApplianceService:
         email_mode = command_values[email_index + 1] if email_index + 1 < len(command_values) else ""
         if email_mode not in {"daily_digest", "immediate"}:
             raise AnalysisUnavailableError(f"Nexus analysekommando bruker ugyldig email-mode: {email_mode}")
+        trigger_index = command_values.index("--trigger-source") if "--trigger-source" in command_values else -1
+        if trigger_index < 0 or trigger_index + 1 >= len(command_values) or command_values[trigger_index + 1] != "nexus_analysis":
+            raise AnalysisUnavailableError("Nexus analysekommando mangler strukturert trigger-source nexus_analysis")
         forbidden_flags = {"--sync-only"}
         for flag in forbidden_flags:
             if flag in command_values:
@@ -4391,27 +4726,54 @@ class ApplianceService:
             self._sync_state.projects_synced = summary.get("projects_synced", 0)
             self._sync_state.files_changed = summary.get("files_changed", 0)
             self._sync_state.reports_found = summary.get("reports_found", 0)
+            self._sync_state.current_project = summary.get("current_project") or self._sync_state.current_project
+            self._sync_state.project_name = self._sync_state.current_project
+            self._sync_state.current_phase = summary.get("current_phase") or "Fullfører synkronisering"
+            self._sync_state.progress = summary.get("progress")
+            self._sync_state.appliance_run_id = summary.get("appliance_run_id") or self._sync_state.appliance_run_id
+            self._sync_state.sync_strategy = summary.get("sync_strategy", "unknown")
+            self._sync_state.sync_strategy_reason = summary.get("sync_strategy_reason")
+            self._sync_state.remote_items_examined = summary.get("remote_items_examined", 0)
+            self._sync_state.files_downloaded = summary.get("files_downloaded", 0)
+            self._sync_state.files_deleted = summary.get("files_deleted", 0)
+            self._sync_state.elapsed_seconds = summary.get("elapsed_seconds")
+            self._sync_state.performance = summary.get("performance")
             if process.returncode == 0:
                 self._sync_state.status = "completed"
                 self._sync_state.last_error = None
+                self._sync_state.progress = 100.0
+                self._sync_state.event_code = "sync_completed_no_changes" if self._sync_state.files_changed == 0 else "sync_completed"
+                self._sync_state.current_phase = (
+                    "Synkronisering fullført uten endringer"
+                    if self._sync_state.files_changed == 0
+                    else "Synkronisering fullført"
+                )
                 self._write_activity_journal(
                     level="SUCCESS",
-                    message=f"Finished sync ({summary.get('files_changed', 0)} files changed)",
+                    message=(
+                        "Sync completed with no changes"
+                        if self._sync_state.files_changed == 0
+                        else f"Finished sync ({summary.get('files_changed', 0)} files changed)"
+                    ),
                     project_name=self._sync_state.project_name,
                     component="OneDrive",
                     kind="log",
-                    details=summary,
+                    details=self._job_details(self._sync_state) | self._sync_summary_details(summary),
                 )
             else:
                 self._sync_state.status = "failed"
                 self._sync_state.last_error = (stderr or stdout or "OneDrive sync failed.").strip()[-2000:]
+                self._sync_state.event_code = "sync_failed"
+                self._sync_state.current_phase = "Synkronisering feilet"
                 self._write_activity_journal(
                     level="ERROR",
                     message=self._sync_state.last_error,
                     project_name=self._sync_state.project_name,
                     component="OneDrive",
                     kind="error",
+                    details=self._job_details(self._sync_state) | self._sync_summary_details(summary),
                 )
+            self._job_history.append(replace(self._sync_state, process=None))
         self._invalidate_health_cache()
         self._invalidate_activity_cache()
 
@@ -4433,11 +4795,18 @@ class ApplianceService:
             self._analysis_state.reports_generated = summary.get("reports_generated", 0)
             self._analysis_state.email_mode = summary.get("email_mode") or self._analysis_state.email_mode
             self._analysis_state.project_name = summary.get("project_name") or self._analysis_state.project_name
+            self._analysis_state.current_project = self._analysis_state.project_name
+            self._analysis_state.current_phase = summary.get("current_phase") or self._analysis_state.current_phase
+            self._analysis_state.progress = summary.get("progress")
+            self._analysis_state.appliance_run_id = summary.get("appliance_run_id") or self._analysis_state.appliance_run_id
             if process.returncode == 0:
                 self._analysis_state.status = "completed"
                 self._analysis_state.auth_status = "ok"
                 self._analysis_state.last_error = None
                 self._analysis_state.last_start_error = None
+                self._analysis_state.progress = 100.0
+                self._analysis_state.event_code = "analysis_completed"
+                self._analysis_state.current_phase = "Analyse fullført"
                 success_message = "Generated report" if summary.get("reports_generated", 0) > 0 else "Finished analysis"
                 if summary.get("email_mode"):
                     success_message = "Email sent" if summary.get("reports_generated", 0) > 0 else success_message
@@ -4447,29 +4816,44 @@ class ApplianceService:
                     project_name=self._analysis_state.project_name,
                     component="Analysis",
                     kind="log",
-                    details=summary,
+                    details=self._job_details(self._analysis_state) | summary,
                 )
             else:
                 status, auth_status = _classify_analysis_error(error_text or "Appliance analysis failed.")
                 self._analysis_state.status = status
                 self._analysis_state.auth_status = auth_status
                 self._analysis_state.last_error = (error_text or "Appliance analysis failed.")[-2000:]
+                self._analysis_state.event_code = "analysis_failed"
+                self._analysis_state.current_phase = "Analyse feilet"
                 self._write_activity_journal(
                     level="ERROR",
                     message=self._analysis_state.last_error,
                     project_name=self._analysis_state.project_name,
                     component="Analysis",
                     kind="error",
+                    details=self._job_details(self._analysis_state),
                 )
+            self._job_history.append(replace(self._analysis_state, process=None))
         self._invalidate_health_cache()
         self._invalidate_activity_cache()
 
-    def _parse_sync_summary(self, stdout: str) -> dict[str, int]:
+    def _parse_sync_summary(self, stdout: str) -> dict[str, Any]:
         parsed = self._parse_cycle_summary(stdout)
         return {
             "projects_synced": parsed.get("projects_synced", 0),
             "files_changed": parsed.get("files_changed", 0),
             "reports_found": parsed.get("reports_found", 0),
+            "current_project": parsed.get("current_project"),
+            "current_phase": parsed.get("current_phase"),
+            "progress": parsed.get("progress"),
+            "appliance_run_id": parsed.get("appliance_run_id"),
+            "sync_strategy": parsed.get("sync_strategy", "unknown"),
+            "sync_strategy_reason": parsed.get("sync_strategy_reason"),
+            "remote_items_examined": parsed.get("remote_items_examined", 0),
+            "files_downloaded": parsed.get("files_downloaded", 0),
+            "files_deleted": parsed.get("files_deleted", 0),
+            "elapsed_seconds": parsed.get("elapsed_seconds"),
+            "performance": parsed.get("performance"),
         }
 
     def _parse_cycle_summary(self, stdout: str) -> dict[str, Any]:
@@ -4483,6 +4867,17 @@ class ApplianceService:
             "email_mode": None,
             "project_name": None,
             "status": "unknown",
+            "current_project": None,
+            "current_phase": None,
+            "progress": None,
+            "appliance_run_id": None,
+            "sync_strategy": "unknown",
+            "sync_strategy_reason": None,
+            "remote_items_examined": 0,
+            "files_downloaded": 0,
+            "files_deleted": 0,
+            "elapsed_seconds": None,
+            "performance": None,
         }
         if not isinstance(payload, dict):
             return summary
@@ -4500,8 +4895,25 @@ class ApplianceService:
         summary["email_mode"] = email_mode
         summary["project_name"] = project_name
         summary["status"] = status
+        summary["current_project"] = self._payload_text(payload, "current_project", "project_name")
+        summary["current_phase"] = self._payload_text(payload, "current_phase", "phase")
+        summary["appliance_run_id"] = self._payload_text(payload, "appliance_run_id", "run_id")
+        summary["progress"] = self._payload_progress(payload)
+        summary["sync_strategy"] = self._normalize_sync_strategy(payload.get("sync_strategy"))
+        summary["sync_strategy_reason"] = self._payload_text(payload, "sync_strategy_reason", "strategy_reason", "fallback_reason")
+        summary["remote_items_examined"] = _parse_int(payload.get("remote_items_examined"), 0)
+        summary["files_downloaded"] = _parse_int(payload.get("files_downloaded"), 0)
+        summary["files_deleted"] = _parse_int(payload.get("files_deleted"), 0)
+        summary["elapsed_seconds"] = self._payload_float(payload.get("elapsed_seconds") or payload.get("duration_seconds"))
+        summary["performance"] = self._parse_sync_performance(payload)
 
         if not isinstance(per_root_results, list):
+            summary["projects_synced"] = _parse_int(payload.get("projects_synced"), 0)
+            summary["files_changed"] = _parse_int(
+                payload.get("files_changed"),
+                _parse_int(payload.get("total_changed_files"), _parse_int(payload.get("downloaded_files"), 0)),
+            )
+            summary["reports_found"] = _parse_int(payload.get("reports_found"), 0)
             return summary
 
         projects_synced = 0
@@ -4509,13 +4921,94 @@ class ApplianceService:
         reports_found = 0
         reports_generated = summary["reports_generated"]
         explicit_reports_generated = reports_generated_explicit is not None
+        root_metric_totals = {
+            "remote_items_examined": 0,
+            "files_downloaded": 0,
+            "files_deleted": 0,
+        }
+        root_metric_seen = {key: False for key in root_metric_totals}
+        root_performance_totals: dict[str, float | int] = {}
+        root_performance_seen = False
+        root_strategies: list[str] = []
+        root_strategy_reasons: list[str] = []
+        root_project_names: list[str] = []
+        root_run_ids: list[str] = []
         for item in per_root_results:
             if not isinstance(item, dict):
                 continue
             if str(item.get("status", "") or "").casefold() != "failed":
                 projects_synced += 1
-            for key in ("downloaded_files", "changed_files", "files_changed", "total_changed_files"):
-                files_changed += _parse_int(item.get(key), 0)
+            item_project = self._payload_text(item, "current_project", "project_name", "root_name")
+            if item_project:
+                root_project_names.append(item_project)
+            item_run_id = self._payload_text(item, "appliance_run_id", "run_id")
+            if item_run_id:
+                root_run_ids.append(item_run_id)
+
+            sync_metrics = item.get("sync_metrics")
+            sync_metrics = sync_metrics if isinstance(sync_metrics, Mapping) else {}
+            changed_value = next(
+                (
+                    item.get(key)
+                    for key in ("files_changed", "changed_files", "total_changed_files", "changed")
+                    if item.get(key) is not None
+                ),
+                None,
+            )
+            if changed_value is not None:
+                files_changed += _parse_int(changed_value, 0)
+
+            metric_values = {
+                "remote_items_examined": next(
+                    (value for value in (item.get("remote_items_examined"), sync_metrics.get("remote_items_examined")) if value is not None),
+                    None,
+                ),
+                "files_downloaded": next(
+                    (
+                        value
+                        for value in (item.get("files_downloaded"), item.get("downloaded_files"), item.get("downloaded"), sync_metrics.get("files_downloaded"))
+                        if value is not None
+                    ),
+                    None,
+                ),
+                "files_deleted": next(
+                    (
+                        value
+                        for value in (item.get("files_deleted"), item.get("deleted_files"), item.get("deleted"), sync_metrics.get("files_deleted"))
+                        if value is not None
+                    ),
+                    None,
+                ),
+            }
+            for key, value in metric_values.items():
+                if value is not None:
+                    root_metric_seen[key] = True
+                    root_metric_totals[key] += _parse_int(value, 0)
+
+            item_strategy = self._normalize_sync_strategy(item.get("sync_strategy") or sync_metrics.get("sync_strategy"))
+            if item_strategy != "unknown":
+                root_strategies.append(item_strategy)
+                item_reason = self._sync_strategy_reason_from_payload(item, strategy=item_strategy)
+                if item_reason:
+                    root_strategy_reasons.append(item_reason)
+            item_performance = self._parse_sync_performance(item)
+            if item_performance is not None:
+                root_performance_seen = True
+                for key in (
+                    "total_duration_seconds",
+                    "authentication_seconds",
+                    "graph_query_seconds",
+                    "downloads_seconds",
+                    "local_state_update_seconds",
+                    "finalization_seconds",
+                ):
+                    value = getattr(item_performance, key)
+                    if value is not None:
+                        root_performance_totals[key] = float(root_performance_totals.get(key, 0.0)) + value
+                for key in ("graph_requests", "downloaded_bytes"):
+                    value = getattr(item_performance, key)
+                    if value is not None:
+                        root_performance_totals[key] = int(root_performance_totals.get(key, 0)) + value
             if item.get("reports_found") is not None:
                 reports_found += _parse_int(item.get("reports_found"), 0)
             else:
@@ -4529,7 +5022,159 @@ class ApplianceService:
         summary["files_changed"] = files_changed
         summary["reports_found"] = reports_found
         summary["reports_generated"] = reports_generated
+        for key, value in root_metric_totals.items():
+            if root_metric_seen[key]:
+                summary[key] = value
+        if root_strategies:
+            summary["sync_strategy"] = (
+                "fallback_full"
+                if "fallback_full" in root_strategies
+                else "full"
+                if "full" in root_strategies
+                else "delta"
+            )
+        if not summary.get("sync_strategy_reason") and root_strategy_reasons:
+            summary["sync_strategy_reason"] = root_strategy_reasons[0]
+        if not summary.get("current_project") and root_project_names:
+            summary["current_project"] = root_project_names[-1]
+        if not summary.get("appliance_run_id") and root_run_ids:
+            summary["appliance_run_id"] = root_run_ids[-1]
+        if root_performance_seen:
+            summary["performance"] = SyncPerformance(**root_performance_totals)
+        if summary["progress"] is None:
+            total_projects = _parse_int(payload.get("total_projects"), _parse_int(payload.get("roots_attempted"), _parse_int(payload.get("total_roots_seen"), 0)))
+            completed_projects = _parse_int(
+                payload.get("completed_projects"),
+                _parse_int(payload.get("roots_synced"), 0) + _parse_int(payload.get("roots_failed"), 0),
+            )
+            if total_projects <= 0:
+                total_projects = len(per_root_results)
+            if completed_projects <= 0:
+                completed_projects = projects_synced
+            if total_projects > 0:
+                summary["progress"] = min(100.0, max(0.0, completed_projects / total_projects * 100))
         return summary
+
+    def _payload_text(self, payload: Mapping[str, Any], *keys: str) -> str | None:
+        for key in keys:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
+    def _payload_float(self, value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    def _payload_progress(self, payload: Mapping[str, Any]) -> float | None:
+        value = payload.get("progress")
+        if isinstance(value, Mapping):
+            value = next((value.get(key) for key in ("percent", "percentage", "progress") if value.get(key) is not None), None)
+        parsed = self._payload_float(value)
+        if parsed is None:
+            return None
+        return min(100.0, parsed if parsed > 1 else parsed * 100)
+
+    def _normalize_sync_strategy(self, value: Any) -> str:
+        normalized = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+        if normalized in {"delta", "delta_sync"}:
+            return "delta"
+        if normalized in {"full", "full_sync"}:
+            return "full"
+        if normalized in {"fallback_full", "fallback_full_sync"}:
+            return "fallback_full"
+        return "unknown"
+
+    def _parse_sync_performance(self, payload: Mapping[str, Any]) -> SyncPerformance | None:
+        candidate = payload.get("performance")
+        metrics = payload.get("sync_metrics")
+        timings = payload.get("timings")
+        candidate = candidate if isinstance(candidate, Mapping) else {}
+        metrics = metrics if isinstance(metrics, Mapping) else {}
+        timings = timings if isinstance(timings, Mapping) else {}
+        values: dict[str, Any] = {}
+        timing_aliases = {
+            "authentication_seconds": ("authentication",),
+            "graph_query_seconds": ("graph_query", "graph_traversal", "graph_delta"),
+            "downloads_seconds": ("downloads",),
+            "local_state_update_seconds": ("local_state_update", "state_persist"),
+            "finalization_seconds": ("finalization",),
+        }
+        for key, aliases in timing_aliases.items():
+            direct = candidate.get(key)
+            if direct is not None:
+                values[key] = self._payload_float(direct)
+                continue
+            alias_values = [self._payload_float(timings.get(alias)) for alias in aliases]
+            numeric_alias_values = [value for value in alias_values if value is not None]
+            if numeric_alias_values:
+                values[key] = sum(numeric_alias_values)
+
+        total_duration = next(
+            (
+                self._payload_float(value)
+                for value in (
+                    candidate.get("total_duration_seconds"),
+                    payload.get("elapsed_seconds"),
+                    payload.get("duration_seconds"),
+                    metrics.get("duration_seconds"),
+                )
+                if value is not None
+            ),
+            None,
+        )
+        if total_duration is not None:
+            values["total_duration_seconds"] = total_duration
+        graph_requests = next((value for value in (candidate.get("graph_requests"), metrics.get("graph_requests")) if value is not None), None)
+        downloaded_bytes = next(
+            (
+                value
+                for value in (candidate.get("downloaded_bytes"), metrics.get("bytes_downloaded"), payload.get("bytes_transferred"))
+                if value is not None
+            ),
+            None,
+        )
+        if graph_requests is not None:
+            values["graph_requests"] = _parse_int(graph_requests, 0)
+        if downloaded_bytes is not None:
+            values["downloaded_bytes"] = _parse_int(downloaded_bytes, 0)
+        return SyncPerformance(**values) if values else None
+
+    def _sync_strategy_reason_from_payload(self, payload: Mapping[str, Any], *, strategy: str) -> str | None:
+        reason = self._payload_text(payload, "sync_strategy_reason", "strategy_reason", "fallback_reason", "reason")
+        if reason:
+            return reason
+        event_records = payload.get("event_records")
+        if isinstance(event_records, list):
+            for event in event_records:
+                if not isinstance(event, Mapping):
+                    continue
+                event_code = str(event.get("event_code") or "").casefold()
+                if strategy == "fallback_full" or "fallback" in event_code:
+                    reason = self._payload_text(event, "reason", "message")
+                    if reason:
+                        return reason
+        if strategy == "fallback_full":
+            return "Delta-synkronisering var ikke tilgjengelig; full gjennomgang ble brukt."
+        return None
+
+    def _sync_summary_details(self, summary: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "current_phase": summary.get("current_phase"),
+            "current_project": summary.get("current_project"),
+            "progress": summary.get("progress"),
+            "appliance_run_id": summary.get("appliance_run_id"),
+            "sync_strategy": summary.get("sync_strategy", "unknown"),
+            "sync_strategy_reason": summary.get("sync_strategy_reason"),
+            "remote_items_examined": summary.get("remote_items_examined", 0),
+            "files_downloaded": summary.get("files_downloaded", 0),
+            "files_deleted": summary.get("files_deleted", 0),
+            "elapsed_seconds": summary.get("elapsed_seconds"),
+            "performance": summary.get("performance").model_dump(mode="json") if isinstance(summary.get("performance"), SyncPerformance) else summary.get("performance"),
+        }
 
     def _last_json_object(self, text: str) -> dict[str, Any]:
         decoder = json.JSONDecoder()

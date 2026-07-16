@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppHeader } from "../components/Layout";
 import { ErrorState } from "../components/ErrorState";
@@ -29,6 +29,10 @@ export function resolveDashboardLastSyncedAt(syncStatus: SyncStatusResponse | nu
   return syncStatus?.last_completed_at ?? health?.last_synced_at ?? null;
 }
 
+export function isSyncStatusForCurrentJob(status: SyncStatusResponse, currentJobId: string | null): boolean {
+  return currentJobId === null || status.job_id === currentJobId;
+}
+
 export function DashboardPage() {
   const { projects, projectsLoading, projectsError, health, healthLoading, healthError, refresh, startupState } = useAppData();
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
@@ -36,22 +40,31 @@ export function DashboardPage() {
   const [syncBusyLive, setSyncBusyLive] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const syncStartupAtRef = useRef<number | null>(null);
+  const syncJobIdRef = useRef<string | null>(null);
   const visibleProjects = sortProjectsByActivity(projects);
   const isInitialProjectsLoad = projectsLoading && visibleProjects.length === 0;
   const applianceStatus = startupState && startupState !== "ready" ? "loading" : healthLoading ? "loading" : health?.appliance_available ? "online" : "offline";
   const applianceLabel = startupState === "starting" ? "Starter …" : startupState === "connecting" ? "Kobler til …" : healthLoading ? "Laster" : health?.appliance_available ? "Klar" : "offline";
   const metrics = buildDashboardMetrics(visibleProjects);
   const analysisStartupBusy = analysisStatus?.status === "startup_pending" || analysisStatus?.startup_grace_active === true;
-  const applianceActivity = syncStatus?.activity && syncStatus.activity !== "idle" ? syncStatus.activity : analysisStartupBusy ? "analysis" : analysisStatus?.activity ?? "idle";
+  const syncRunningFromStatus = Boolean(
+    syncStatus?.running ||
+      syncStatus?.process_alive ||
+      syncStatus?.status === "startup_pending" ||
+      (syncStatus?.job_type === "sync" && syncStatus?.activity === "sync"),
+  );
+  const analysisRunningFromStatus = Boolean(analysisStatus?.running || analysisStatus?.process_alive || analysisStartupBusy);
+  const applianceActivity = syncRunningFromStatus || syncBusyLive ? "sync" : analysisRunningFromStatus ? "analysis" : "idle";
   const syncHasStaleLock = Boolean(syncStatus?.last_error && isLockBusyError(syncStatus.last_error));
   const applianceBusy =
-    syncBusyLive || syncStatus?.running === true || analysisStatus?.running === true || analysisStartupBusy || syncStatus?.lock_exists === true || analysisStatus?.lock_exists === true;
+    syncBusyLive || syncRunningFromStatus || analysisRunningFromStatus || syncStatus?.lock_exists === true || analysisStatus?.lock_exists === true;
   const startupLabel = startupState === "starting" ? "Starter …" : startupState === "connecting" ? "Kobler til …" : null;
   const explicitSyncFailure = Boolean(syncStatus?.error_code && ["sync_failed", "project_sync_failed", "onedrive_sync_failed", "graph_auth_failed", "graph_permission_denied", "auth_failed"].includes(syncStatus.error_code));
   const syncPillStatus = startupLabel ? "RUNNING" : applianceBusy ? "RUNNING" : syncHasStaleLock ? "idle" : explicitSyncFailure ? "FAILED" : "idle";
   const syncPillLabel = startupLabel ?? (applianceBusy
     ? applianceActivity === "sync"
-      ? SYNC_RUNNING_LABEL
+      ? syncStatus?.current_phase ?? SYNC_RUNNING_LABEL
       : applianceActivity === "analysis"
         ? ANALYSIS_RUNNING_LABEL
         : APPLIANCE_BUSY_LABEL
@@ -62,7 +75,9 @@ export function DashboardPage() {
         : APPLIANCE_CLEAR_MESSAGE);
   const syncButtonDisabled = applianceBusy;
   const syncButtonTitle = applianceBusy ? SYNC_LOCK_HELP_TEXT : SYNC_START_DESCRIPTION;
-  const syncLastErrorMessage = getVisibleSyncErrorMessage(syncStatus?.last_error, syncStatus?.error_code);
+  const syncLastErrorMessage = !syncBusyLive && (explicitSyncFailure || syncHasStaleLock)
+    ? getVisibleSyncErrorMessage(syncStatus?.last_error, syncStatus?.error_code)
+    : null;
   const syncLastErrorTone = syncStatus?.last_error && isLockBusyError(syncStatus.last_error) ? "warning" : "error";
   const busyActionNote = applianceBusy ? SYNC_LOCK_HELP_TEXT : null;
   const dashboardLastSyncedAt = resolveDashboardLastSyncedAt(syncStatus, health);
@@ -91,9 +106,14 @@ export function DashboardPage() {
       }
 
       if (syncResult.status === "fulfilled") {
-        latestSyncStatus = syncResult.value;
-        setSyncStatus(syncResult.value);
-        setSyncError(null);
+        const belongsToCurrentJob = isSyncStatusForCurrentJob(syncResult.value, syncJobIdRef.current);
+        if (belongsToCurrentJob) {
+          latestSyncStatus = syncResult.value;
+          setSyncStatus(syncResult.value);
+          setSyncError(null);
+        } else {
+          latestSyncStatus = null;
+        }
       } else {
         setSyncError(getUserFacingErrorMessage(syncResult.reason, "Status kunne ikke hentes."));
       }
@@ -105,12 +125,26 @@ export function DashboardPage() {
         console.error("[DashboardPage] getAnalysisStatus failed", analysisResult.reason);
       }
 
-      const busyFromStatuses = Boolean(latestSyncStatus?.running || latestAnalysisStatus?.running);
+      const busyFromStatuses = Boolean(
+        latestSyncStatus?.running ||
+          latestSyncStatus?.process_alive ||
+          latestAnalysisStatus?.running ||
+          latestAnalysisStatus?.process_alive ||
+          latestAnalysisStatus?.status === "startup_pending" ||
+          latestAnalysisStatus?.startup_grace_active,
+      );
+      const syncStartupGraceActive = Boolean(
+        syncBusyLive &&
+          syncStartupAtRef.current !== null &&
+          Date.now() - syncStartupAtRef.current < 10_000,
+      );
       const busy = busyFromStatuses || syncBusyLive;
-      if (!busyFromStatuses && syncBusyLive) {
+      const currentJobStatusReceived = !syncJobIdRef.current || latestSyncStatus?.job_id === syncJobIdRef.current;
+      if (!busyFromStatuses && syncBusyLive && currentJobStatusReceived && !syncStartupGraceActive) {
         setSyncBusyLive(false);
+        syncStartupAtRef.current = null;
       }
-      timer = window.setTimeout(pollApplianceStatus, busy ? 600000 : 30000);
+      timer = window.setTimeout(pollApplianceStatus, busy ? 3000 : 30000);
     }
 
     void pollApplianceStatus();
@@ -123,15 +157,20 @@ export function DashboardPage() {
   }, [startupState, syncBusyLive]);
 
   async function handleRunSync() {
-    setSyncMessage("Starter trygg OneDrive-sync uten rapportgenerering ...");
+    const idempotencyKey = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `sync-${Date.now()}`;
+    syncStartupAtRef.current = Date.now();
+    setSyncBusyLive(true);
+    setSyncError(null);
+    setSyncMessage("Starter synkronisering ...");
     let syncStarted = false;
     try {
-      const response = await runSync();
+      const response = await runSync({ idempotencyKey });
       syncStarted = true;
+      syncJobIdRef.current = response.job_id;
       if (response.status === "already_running") {
         setSyncBusyLive(true);
       }
-      setSyncMessage(response.status === "already_running" ? "OneDrive-sync kjører allerede." : "OneDrive-sync startet uten rapportgenerering.");
+      setSyncMessage(response.status === "already_running" ? "OneDrive-synkronisering kjører allerede." : "Synkronisering startet. Venter på første status ...");
       try {
         setSyncStatus(await getSyncStatus());
         setSyncError(null);
@@ -140,12 +179,16 @@ export function DashboardPage() {
       }
     } catch (error) {
       if (error instanceof ApiRequestError && error.status === 503 && error.message === APPLIANCE_BUSY_MESSAGE) {
-        setSyncBusyLive(true);
+        setSyncBusyLive(false);
+        syncStartupAtRef.current = null;
+        syncJobIdRef.current = null;
         setSyncError(null);
-        setSyncMessage(null);
+        setSyncMessage(APPLIANCE_BUSY_MESSAGE);
         return;
       }
       setSyncMessage(getUserFacingErrorMessage(error, "Kunne ikke starte OneDrive-sync."));
+      setSyncBusyLive(false);
+      syncStartupAtRef.current = null;
     } finally {
       if (syncStarted) {
         refresh();
@@ -206,9 +249,37 @@ export function DashboardPage() {
         <div className="dashboard-sync-details">
           <span>Siste sync-start: {syncStatus?.last_started_at ? formatDateTime(syncStatus.last_started_at) : "Ikke kjørt fra portal"}</span>
           <span>Siste sync-ferdig: {syncStatus?.last_completed_at ? formatDateTime(syncStatus.last_completed_at) : "—"}</span>
+          {syncStatus?.current_phase ? <span>Fase: {syncStatus.current_phase}</span> : null}
+          {syncStatus?.current_project ? <span>Prosjekt: {syncStatus.current_project}</span> : null}
+          {syncStatus?.progress !== null && syncStatus?.progress !== undefined ? <span>Fremdrift: {Math.round(syncStatus.progress)}%</span> : null}
+          {syncStatus?.sync_strategy && syncStatus.sync_strategy !== "unknown" ? <span>Strategi: {formatSyncStrategy(syncStatus.sync_strategy)}</span> : null}
+          {syncStatus?.sync_strategy && syncStatus.sync_strategy !== "unknown" ? <span>{syncStrategyDescription(syncStatus.sync_strategy)}</span> : null}
+          {syncStatus?.sync_strategy_reason ? <span>Strategiårsak: {syncStatus.sync_strategy_reason}</span> : null}
           <span>Endrede filer siste sync: {syncStatus?.files_changed !== undefined ? syncStatus.files_changed.toLocaleString("nb-NO") : "0"}</span>
+          <span>Filer lastet ned: {syncStatus?.files_downloaded !== undefined ? syncStatus.files_downloaded.toLocaleString("nb-NO") : "0"}</span>
+          <span>Filer slettet: {syncStatus?.files_deleted !== undefined ? syncStatus.files_deleted.toLocaleString("nb-NO") : "0"}</span>
+          <span>Remote-elementer: {syncStatus?.remote_items_examined !== undefined ? syncStatus.remote_items_examined.toLocaleString("nb-NO") : "0"}</span>
           <span>Rapporter funnet: {syncStatus?.reports_found !== undefined ? syncStatus.reports_found.toLocaleString("nb-NO") : "0"}</span>
         </div>
+        {syncStatus?.performance ? (
+          <details className="dashboard-sync-performance">
+            <summary>Vis sync-ytelse</summary>
+            <div>
+              {syncStatus.performance.total_duration_seconds !== null && syncStatus.performance.total_duration_seconds !== undefined
+                ? `Total tid: ${syncStatus.performance.total_duration_seconds.toFixed(1)} s`
+                : "Total tid: —"}
+              {syncStatus.performance.authentication_seconds !== null && syncStatus.performance.authentication_seconds !== undefined
+                ? ` · Auth: ${syncStatus.performance.authentication_seconds.toFixed(1)} s`
+                : ""}
+              {syncStatus.performance.graph_query_seconds !== null && syncStatus.performance.graph_query_seconds !== undefined
+                ? ` · Graph: ${syncStatus.performance.graph_query_seconds.toFixed(1)} s`
+                : ""}
+              {syncStatus.performance.downloads_seconds !== null && syncStatus.performance.downloads_seconds !== undefined
+                ? ` · Nedlasting: ${syncStatus.performance.downloads_seconds.toFixed(1)} s`
+                : ""}
+            </div>
+          </details>
+        ) : null}
         {healthError ? <div className="inline-note inline-note--error">{healthError}</div> : null}
         {syncError ? <div className="inline-note inline-note--error">{syncError}</div> : null}
         {syncLastErrorMessage ? (
@@ -317,4 +388,27 @@ function buildDashboardMetrics(projects: ProjectViewModel[]) {
     lastAnalyzedAt: newest(projects.map((project) => project.lastAnalyzedAt)),
     latestReportAt: newest(projects.map((project) => project.latestReport?.createdAt ?? null)),
   };
+}
+
+function formatSyncStrategy(strategy: string): string {
+  if (strategy === "delta") {
+    return "Delta · kun endringer";
+  }
+  if (strategy === "fallback_full") {
+    return "Fallback full";
+  }
+  if (strategy === "full") {
+    return "Full";
+  }
+  return strategy;
+}
+
+function syncStrategyDescription(strategy: string): string {
+  if (strategy === "delta") {
+    return "Henter kun endringer siden forrige synkronisering.";
+  }
+  if (strategy === "full" || strategy === "fallback_full") {
+    return "Full gjennomgang av OneDrive pågår. Dette tar lengre tid enn en vanlig endringssynkronisering.";
+  }
+  return "";
 }

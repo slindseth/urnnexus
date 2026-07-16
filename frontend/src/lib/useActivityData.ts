@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { getActivityEvents, getActivityLogs, getActivityStatus } from "./api";
-import type { ActivityEventsResponse, ActivityLogsResponse, ActivityStatusResponse } from "../types";
+import { getActivityEvents, getActivityLogs, getActivityStatus, getSyncStatus } from "./api";
+import type { ActivityEventsResponse, ActivityLogsResponse, ActivityStatusResponse, SyncStatusResponse } from "../types";
 
 interface ActivityDataState {
   status: ActivityStatusResponse | null;
   statusLoading: boolean;
   statusError: string | null;
+  syncStatus: SyncStatusResponse | null;
   events: ActivityEventsResponse | null;
   eventsLoading: boolean;
   eventsError: string | null;
@@ -25,6 +26,7 @@ export function useActivityData(refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS)
   const [status, setStatus] = useState<ActivityStatusResponse | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
   const [events, setEvents] = useState<ActivityEventsResponse | null>(null);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState<string | null>(null);
@@ -38,7 +40,7 @@ export function useActivityData(refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS)
     let timerId: number | undefined;
 
     async function loadActivityData() {
-      const [statusResult, eventsResult, logsResult] = await Promise.allSettled([getActivityStatus(), getActivityEvents(), getActivityLogs()]);
+      const [statusResult, syncResult, eventsResult, logsResult] = await Promise.allSettled([getActivityStatus(), getSyncStatus(), getActivityEvents(), getActivityLogs()]);
       if (cancelled) {
         return;
       }
@@ -48,6 +50,10 @@ export function useActivityData(refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS)
         setStatusError(null);
       } else {
         setStatusError(errorMessage(statusResult.reason, "Kunne ikke lese aktivitetsstatus."));
+      }
+
+      if (syncResult.status === "fulfilled") {
+        setSyncStatus(syncResult.value);
       }
 
       if (eventsResult.status === "fulfilled") {
@@ -84,6 +90,7 @@ export function useActivityData(refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS)
     status,
     statusLoading,
     statusError,
+    syncStatus,
     events,
     eventsLoading,
     eventsError,

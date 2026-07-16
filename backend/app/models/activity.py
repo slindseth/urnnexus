@@ -6,8 +6,28 @@ from typing import Literal
 from pydantic import Field
 
 from .common import ApiModel
+from .operations import SyncPerformance
 
-ActivityState = Literal["Klar", "Starter", "Synkroniserer", "Analyserer", "Genererer rapport", "Sender e-post", "Feilet"]
+ActivityCategory = Literal["Sync", "Analysis", "System", "OneDrive", "Report", "Error"]
+ActivityState = Literal[
+    "Klar",
+    "Starter",
+    "Starter synkronisering",
+    "Kobler til OneDrive",
+    "Henter endringer",
+    "Synkroniserer prosjekt",
+    "Laster ned filer",
+    "Oppdaterer lokal status",
+    "Fullfører synkronisering",
+    "Synkronisering fullført",
+    "Synkronisering fullført uten endringer",
+    "Synkronisering feilet",
+    "Synkroniserer",
+    "Analyserer",
+    "Genererer rapport",
+    "Sender e-post",
+    "Feilet",
+]
 ActivityLevel = Literal["INFO", "SUCCESS", "WARNING", "ERROR"]
 
 
@@ -23,6 +43,16 @@ class ActivityStatusResponse(ApiModel):
     last_synced_at: datetime | None = None
     last_analyzed_at: datetime | None = None
     updated_at: datetime
+    job_type: Literal["sync", "analysis"] | None = None
+    job_id: str | None = None
+    run_mode: Literal["sync_only", "analysis", "unknown"] = "unknown"
+    event_code: str | None = None
+    current_phase: str | None = None
+    current_project: str | None = None
+    progress: float | None = None
+    sync_strategy: Literal["delta", "full", "fallback_full", "unknown"] = "unknown"
+    sync_strategy_reason: str | None = None
+    performance: SyncPerformance | None = None
 
 
 class ActivityEvent(ApiModel):
@@ -31,6 +61,13 @@ class ActivityEvent(ApiModel):
     project_name: str | None = None
     component: str | None = None
     message: str
+    category: ActivityCategory = "System"
+    source: str | None = None
+    event_code: str | None = None
+    phase: str | None = None
+    run_mode: Literal["sync_only", "analysis", "unknown"] = "unknown"
+    job_type: Literal["sync", "analysis"] | None = None
+    job_id: str | None = None
 
 
 class ActivityError(ApiModel):
@@ -38,6 +75,13 @@ class ActivityError(ApiModel):
     project_name: str | None = None
     component: str | None = None
     message: str
+    category: Literal["Error"] = "Error"
+    source: str | None = None
+    event_code: str | None = None
+    phase: str | None = None
+    run_mode: Literal["sync_only", "analysis", "unknown"] = "unknown"
+    job_type: Literal["sync", "analysis"] | None = None
+    job_id: str | None = None
 
 
 class ActivityEventsResponse(ApiModel):
@@ -52,6 +96,13 @@ class ActivityLogEntry(ApiModel):
     project_name: str | None = None
     component: str | None = None
     message: str
+    category: ActivityCategory = "System"
+    source: str | None = None
+    event_code: str | None = None
+    phase: str | None = None
+    run_mode: Literal["sync_only", "analysis", "unknown"] = "unknown"
+    job_type: Literal["sync", "analysis"] | None = None
+    job_id: str | None = None
 
 
 class ActivityLogsResponse(ApiModel):

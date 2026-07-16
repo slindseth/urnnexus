@@ -22,6 +22,7 @@ from backend.app.models.operations import (
     ProjectCreateResponse,
     ProjectDeleteResponse,
     ProjectLocalCacheDeleteResponse,
+    SyncRunRequest,
     SyncRunResponse,
     SyncStatusResponse,
 )
@@ -366,9 +367,10 @@ def delete_project_local_cache(project_name: str, service: ApplianceService = De
     return service.delete_project_local_cache(project_name)
 
 
+@router.post("/sync/start", response_model=SyncRunResponse)
 @router.post("/sync/run", response_model=SyncRunResponse)
-def run_sync(service: ApplianceService = Depends(get_service)) -> SyncRunResponse:
-    return service.start_sync()
+def run_sync(payload: SyncRunRequest | None = None, service: ApplianceService = Depends(get_service)) -> SyncRunResponse:
+    return service.start_sync(project_name=payload.project_name if payload else None, idempotency_key=payload.idempotency_key if payload else None)
 
 
 @router.get("/sync/status", response_model=SyncStatusResponse)
@@ -376,6 +378,7 @@ def sync_status(service: ApplianceService = Depends(get_service)) -> SyncStatusR
     return service.sync_status()
 
 
+@router.post("/analysis/start", response_model=AnalysisRunResponse)
 @router.post("/analysis/run", response_model=AnalysisRunResponse)
 def run_analysis(payload: AnalysisRunRequest, service: ApplianceService = Depends(get_service)) -> AnalysisRunResponse:
     return service.start_analysis(payload.project_name, email_mode=payload.email_mode)

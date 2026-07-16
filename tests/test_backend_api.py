@@ -1689,10 +1689,29 @@ def test_sync_endpoint_starts_sync_only_nonblocking_job(monkeypatch: pytest.Monk
                         "per_root_results": [
                             {
                                 "status": "completed",
-                                "changed_files": 2,
-                                "reports_found": 0,
+                                "root_name": "Bryn Skole",
+                                "project_name": "Bryn Skole",
+                                "run_id": "appliance-run-1",
+                                "changed": 2,
+                                "downloaded": 2,
+                                "deleted": 1,
+                                "sync_strategy": "delta",
+                                "sync_metrics": {
+                                    "remote_items_examined": 12,
+                                    "files_downloaded": 2,
+                                    "files_deleted": 1,
+                                    "graph_requests": 3,
+                                    "bytes_downloaded": 2048,
+                                    "duration_seconds": 4.5,
+                                },
+                                "timings": {
+                                    "authentication": 0.4,
+                                    "graph_delta": 1.2,
+                                    "downloads": 2.1,
+                                    "finalization": 0.8,
+                                },
                             }
-                        ]
+                        ],
                     }
                 ),
                 "",
@@ -1717,6 +1736,9 @@ def test_sync_endpoint_starts_sync_only_nonblocking_job(monkeypatch: pytest.Monk
     assert payload["projects_synced"] == 0
     assert payload["files_changed"] == 0
     assert payload["reports_found"] == 0
+    assert payload["job_type"] == "sync"
+    assert payload["run_mode"] == "sync_only"
+    assert payload["event_code"] == "sync_started"
     assert started_commands
     assert "run_onedrive_appliance.py" in started_commands[0][1]
     assert "--once" in started_commands[0]
@@ -1729,12 +1751,71 @@ def test_sync_endpoint_starts_sync_only_nonblocking_job(monkeypatch: pytest.Monk
     assert "immediate" not in started_commands[0]
     assert "daily_digest" not in started_commands[0]
     assert "--local-output-mode" not in started_commands[0]
+    trigger_index = started_commands[0].index("--trigger-source")
+    assert started_commands[0][trigger_index + 1] == "nexus_sync"
+    started_by_index = started_commands[0].index("--started-by")
+    assert started_commands[0][started_by_index + 1] == "nexus-web"
 
-    status_response = client.get("/api/sync/status")
-    assert status_response.status_code == 200
-    status_payload = status_response.json()
+    status_payload = None
+    for _ in range(50):
+        status_response = client.get("/api/sync/status")
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        if status_payload["status"] == "completed":
+            break
+        time.sleep(0.01)
     assert status_payload["job_id"] == payload["job_id"]
     assert status_payload["status"] in {"running", "completed"}
+    assert status_payload["job_type"] == "sync"
+    assert status_payload["run_mode"] == "sync_only"
+    assert status_payload["event_code"] == "sync_completed"
+    assert status_payload["current_project"] == "Bryn Skole"
+    assert status_payload["progress"] == 100.0
+    assert status_payload["appliance_run_id"] == "appliance-run-1"
+    assert status_payload["projects_synced"] == 1
+    assert status_payload["sync_strategy"] == "delta"
+    assert status_payload["sync_strategy_reason"] is None
+    assert status_payload["remote_items_examined"] == 12
+    assert status_payload["files_downloaded"] == 2
+    assert status_payload["files_deleted"] == 1
+    assert status_payload["performance"]["graph_requests"] == 3
+    assert status_payload["performance"]["total_duration_seconds"] == 4.5
+    assert status_payload["performance"]["downloaded_bytes"] == 2048
+
+
+def test_sync_start_idempotency_key_does_not_spawn_a_second_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    appliance_root = tmp_path / "appliance"
+    app = create_app(ApplianceSettings(appliance_root=appliance_root))
+    service = app.state.appliance_service
+
+    class DummyProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    service._sync_state = SyncJobState(
+        running=True,
+        process=DummyProcess(),
+        job_id="sync-job",
+        requested_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+        last_started_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+        status="running",
+        current_phase="Henter endringer",
+        run_mode="sync_only",
+        event_code="sync_started",
+    )
+    service._last_sync_idempotency_key = "same-request"
+    monkeypatch.setattr("backend.app.services.appliance.subprocess.Popen", lambda *_args, **_kwargs: pytest.fail("duplicate sync spawned"))
+
+    client = _AsyncAppClient(app)
+    response = client.post("/api/sync/start", json={"idempotency_key": "same-request"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "already_running"
+    assert payload["job_id"] == "sync-job"
+    assert payload["run_mode"] == "sync_only"
 
 
 def test_sync_endpoint_returns_busy_when_analysis_is_active(tmp_path: Path) -> None:
@@ -1980,6 +2061,10 @@ def test_analysis_endpoint_starts_full_pipeline_for_selected_project(monkeypatch
     assert "--include-root-folder" in started_commands[0]
     assert "Bryn Skole" in started_commands[0]
     assert "--sync-only" not in started_commands[0]
+    trigger_index = started_commands[0].index("--trigger-source")
+    assert started_commands[0][trigger_index + 1] == "nexus_analysis"
+    assert payload["job_type"] == "analysis"
+    assert payload["run_mode"] == "analysis"
 
     status_payload = None
     for _ in range(50):
@@ -2232,6 +2317,8 @@ def test_activity_endpoints_report_running_state_and_ordered_events(tmp_path: Pa
     assert status["activity"] == "OneDrive Sync"
     assert status["status"] == "Synkroniserer dokumenter"
     assert status["project_name"] == "Bryn Skole"
+    assert status["job_type"] == "sync"
+    assert status["run_mode"] == "sync_only"
 
     assert events_response.status_code == 200
     events = events_response.json()
@@ -2240,6 +2327,8 @@ def test_activity_endpoints_report_running_state_and_ordered_events(tmp_path: Pa
         "Generated report",
         "Started analysis",
     ]
+    assert [entry["category"] for entry in events["events"]] == ["OneDrive", "Report", "Analysis"]
+    assert [entry["source"] for entry in events["events"]] == ["OneDrive", "Report", "Analysis"]
     assert events["errors"] == []
 
     assert logs_response.status_code == 200
@@ -2250,6 +2339,50 @@ def test_activity_endpoints_report_running_state_and_ordered_events(tmp_path: Pa
         "Started analysis",
     ]
     assert all(entry["message"] != "Waiting for history lock" for entry in logs["entries"])
+
+
+def test_activity_does_not_report_stale_analysis_while_sync_is_active(tmp_path: Path) -> None:
+    appliance_root = tmp_path / "appliance"
+    appliance_root.mkdir(parents=True, exist_ok=True)
+
+    class DummyProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    app = create_app(ApplianceSettings(appliance_root=appliance_root))
+    service = app.state.appliance_service
+    service._sync_state = SyncJobState(
+        running=True,
+        process=DummyProcess(),
+        job_id="sync-job",
+        status="running",
+        current_phase="Henter endringer",
+        current_project="Bryn Skole",
+        run_mode="sync_only",
+        event_code="sync_started",
+    )
+    service._analysis_state = AnalysisJobState(
+        running=True,
+        process=DummyProcess(),
+        job_id="old-analysis-job",
+        status="running",
+        current_phase="Analyserer dokumenter",
+        last_error="Stale analysis error",
+    )
+
+    response = _AsyncAppClient(app).get("/api/activity/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job_type"] == "sync"
+    assert payload["run_mode"] == "sync_only"
+    assert payload["event_code"] == "sync_started"
+    assert payload["state"] == "Henter endringer"
+    assert payload["activity"] == "OneDrive Sync"
+    assert payload["status"] == "Henter endringer"
+    assert payload["project_name"] == "Bryn Skole"
 
 
 def test_activity_endpoints_report_failed_state_and_meaningful_errors(tmp_path: Path) -> None:

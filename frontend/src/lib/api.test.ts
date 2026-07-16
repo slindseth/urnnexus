@@ -34,10 +34,29 @@ describe("api sync", () => {
 
     const response = await runSync();
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/sync/run", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/sync/start", expect.objectContaining({ method: "POST" }));
     expect(response.sync_only).toBe(true);
     expect(response.analysis_started).toBe(false);
     expect(response.reports_generated).toBe(0);
+  });
+
+  it("sends the sync scope and idempotency key to the dedicated sync route", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "sync-job", running: true, started_at: "2026-06-08T08:00:00+02:00", status: "started" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await runSync({ projectName: "Bryn Skole", idempotencyKey: "sync-request-1" });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sync/start",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ project_name: "Bryn Skole", idempotency_key: "sync-request-1" }),
+      }),
+    );
   });
 
   it("calls the delete endpoint for OneDrive project deletion", async () => {
@@ -131,7 +150,7 @@ describe("api sync", () => {
     const response = await runAnalysis({ project_name: "Bryn Skole", email_mode: "daily_digest" });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/analysis/run",
+      "/api/analysis/start",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({

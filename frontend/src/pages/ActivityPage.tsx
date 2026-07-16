@@ -4,11 +4,21 @@ import { EmptyState } from "../components/EmptyState";
 import { StatusPill } from "../components/StatusPill";
 import { formatDateTime, formatTimeOfDay } from "../lib/api";
 import { useActivityData } from "../lib/useActivityData";
-import type { ActivityError, ActivityEvent, ActivityLevel, ActivityLogEntry, ActivityState } from "../types";
+import type { ActivityError, ActivityEvent, ActivityLevel, ActivityLogEntry, ActivityState, ActivityStatusResponse, SyncStatusResponse } from "../types";
 
 const STATUS_TONES: Record<ActivityState, "success" | "info" | "warning" | "danger" | "neutral"> = {
   Klar: "success",
   Starter: "info",
+  "Starter synkronisering": "info",
+  "Kobler til OneDrive": "info",
+  "Henter endringer": "info",
+  "Synkroniserer prosjekt": "info",
+  "Laster ned filer": "info",
+  "Oppdaterer lokal status": "info",
+  "Fullfører synkronisering": "info",
+  "Synkronisering fullført": "success",
+  "Synkronisering fullført uten endringer": "success",
+  "Synkronisering feilet": "danger",
   Synkroniserer: "info",
   Analyserer: "info",
   "Genererer rapport": "warning",
@@ -26,7 +36,7 @@ const LEVEL_TONES: Record<ActivityLevel, "success" | "info" | "warning" | "dange
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 export function ActivityPage() {
-  const { status, statusLoading, statusError, events, eventsLoading, eventsError, logs, logsLoading, logsError } = useActivityData();
+  const { status, statusLoading, statusError, syncStatus, events, eventsLoading, eventsError, logs, logsLoading, logsError } = useActivityData();
   const [searchTerm, setSearchTerm] = useState("");
   const [pinLogsToTop, setPinLogsToTop] = useState(true);
   const [clearedAfterMs, setClearedAfterMs] = useState(0);
@@ -148,6 +158,9 @@ export function ActivityPage() {
                 <span>Backend {status.backend_version ?? "—"}</span>
                 <span>Uptime {status.uptime}</span>
               </div>
+              {status.job_type === "sync" || status.run_mode === "sync_only" || syncStatus?.job_type === "sync" ? (
+                <SyncProgressDetails status={status.job_type === "sync" || status.run_mode === "sync_only" ? status : syncStatus ?? status} />
+              ) : null}
             </div>
           ) : (
             <EmptyState title="Ingen status ennå" description="Det finnes ingen systemstatus å vise akkurat nå." />
@@ -308,12 +321,112 @@ function StatusDefinition({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SyncProgressDetails({ status }: { status: ActivityStatusResponse | SyncStatusResponse }) {
+  const progress = typeof status.progress === "number" ? Math.min(100, Math.max(0, status.progress)) : null;
+  const strategy = status.sync_strategy && status.sync_strategy !== "unknown" ? status.sync_strategy : null;
+
+  return (
+    <div className="activity-sync-progress" aria-label="OneDrive-syncdetaljer">
+      <div className="activity-sync-progress__head">
+        <strong>OneDrive-sync</strong>
+        <span>{strategy ? syncStrategyLabel(strategy) : "Strategi ikke rapportert"}</span>
+      </div>
+      {strategy ? <div className="activity-sync-progress__strategy-copy">{syncStrategyDescription(strategy)}</div> : null}
+      {status.sync_strategy_reason ? <div className="activity-sync-progress__reason">{status.sync_strategy_reason}</div> : null}
+      {status.current_phase ? <div className="activity-sync-progress__phase">{status.current_phase}</div> : null}
+      {status.current_project ? <div className="activity-sync-progress__project">Prosjekt: {status.current_project}</div> : null}
+      {"files_downloaded" in status ? (
+        <div className="activity-sync-progress__metrics">
+          <span>Prosjekter: {status.projects_synced.toLocaleString("nb-NO")}</span>
+          <span>Endret: {status.files_changed.toLocaleString("nb-NO")}</span>
+          <span>Lastet ned: {(status.files_downloaded ?? 0).toLocaleString("nb-NO")}</span>
+          <span>Slettet: {(status.files_deleted ?? 0).toLocaleString("nb-NO")}</span>
+          <span>Remote: {(status.remote_items_examined ?? 0).toLocaleString("nb-NO")}</span>
+          {status.elapsed_seconds !== null && status.elapsed_seconds !== undefined ? <span>Tid: {status.elapsed_seconds.toFixed(1)} s</span> : null}
+        </div>
+      ) : null}
+      {progress !== null ? (
+        <div className="activity-sync-progress__bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <span style={{ width: `${progress}%` }} />
+        </div>
+      ) : null}
+      {status.performance ? (
+        <details className="activity-sync-progress__performance">
+          <summary>Vis ytelsesdata</summary>
+          <div>
+            {status.performance.total_duration_seconds !== null && status.performance.total_duration_seconds !== undefined
+              ? `Total tid: ${status.performance.total_duration_seconds.toFixed(1)} s`
+              : "Total tid: —"}
+            {status.performance.graph_requests !== null && status.performance.graph_requests !== undefined
+              ? ` · Graph-kall: ${status.performance.graph_requests.toLocaleString("nb-NO")}`
+              : ""}
+            {status.performance.downloaded_bytes !== null && status.performance.downloaded_bytes !== undefined
+              ? ` · Bytes: ${status.performance.downloaded_bytes.toLocaleString("nb-NO")}`
+              : ""}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function syncStrategyLabel(strategy: string): string {
+  if (strategy === "delta") {
+    return "Delta-sync · kun endringer";
+  }
+  if (strategy === "fallback_full") {
+    return "Fallback full sync";
+  }
+  if (strategy === "full") {
+    return "Full sync";
+  }
+  return strategy;
+}
+
+function syncStrategyDescription(strategy: string): string {
+  if (strategy === "delta") {
+    return "Henter kun endringer siden forrige synkronisering.";
+  }
+  if (strategy === "full" || strategy === "fallback_full") {
+    return "Full gjennomgang av OneDrive pågår. Dette tar lengre tid enn en vanlig endringssynkronisering.";
+  }
+  return "";
+}
+
+function activityCategory(entry: Pick<ActivityEvent, "category" | "component" | "level" | "run_mode">): string {
+  if (entry.category) {
+    return entry.category;
+  }
+  if (entry.level === "ERROR") {
+    return "Error";
+  }
+  if (entry.run_mode === "sync_only") {
+    return "Sync";
+  }
+  if (entry.run_mode === "analysis") {
+    return "Analysis";
+  }
+  if (entry.component === "OneDrive") {
+    return "OneDrive";
+  }
+  if (entry.component === "Reports" || entry.component === "Report") {
+    return "Report";
+  }
+  return "System";
+}
+
+function activitySource(entry: Pick<ActivityEvent, "source" | "component">): string {
+  const source = entry.source?.trim();
+  return source && source.toLowerCase() !== "history" ? source : entry.component ?? "System";
+}
+
 function ActivityFeedRow({ entry }: { entry: ActivityEvent }) {
   return (
     <li className="activity-feed__item">
       <div className="activity-feed__meta">
         <span className="activity-feed__time">{formatTimeOfDay(entry.timestamp)}</span>
         <StatusPill status={entry.level} label={entry.level} tone={LEVEL_TONES[entry.level]} />
+        <span className="activity-feed__category">{activityCategory(entry)} · {activitySource(entry)}</span>
       </div>
       <div className="activity-feed__message">{entry.message}</div>
       {entry.project_name || entry.component ? (
@@ -331,6 +444,7 @@ function ActivityErrorRow({ entry }: { entry: ActivityError }) {
       <div className="activity-error-list__meta">
         <span className="activity-error-list__time">{formatTimeOfDay(entry.timestamp)}</span>
         {entry.project_name ? <span className="activity-error-list__project">{entry.project_name}</span> : <span className="activity-error-list__project">—</span>}
+        <span className="activity-feed__category">Error · {activitySource(entry)}</span>
       </div>
       <div className="activity-error-list__message">{entry.message}</div>
       {entry.component ? <div className="activity-error-list__component">{entry.component}</div> : null}
@@ -343,9 +457,10 @@ function ActivityLogRow({ entry }: { entry: ActivityLogEntry }) {
     <div className={`activity-log-row activity-log-row--${entry.level.toLowerCase()}`}>
       <span className="activity-log-row__time">{formatTimeOfDay(entry.timestamp)}</span>
       <StatusPill status={entry.level} label={entry.level} tone={LEVEL_TONES[entry.level]} />
+      <span className="activity-log-row__category">{activityCategory(entry)}</span>
       <span className="activity-log-row__message">{entry.message}</span>
-      {entry.project_name || entry.component ? (
-        <span className="activity-log-row__meta">{[entry.project_name, entry.component].filter(Boolean).join(" · ")}</span>
+      {entry.project_name || entry.component || entry.source ? (
+        <span className="activity-log-row__meta">{[activitySource(entry), entry.project_name, entry.component].filter(Boolean).join(" · ")}</span>
       ) : null}
     </div>
   );
@@ -354,7 +469,7 @@ function ActivityLogRow({ entry }: { entry: ActivityLogEntry }) {
 function buildLogExport(entries: ActivityLogEntry[]): string {
   return entries
     .map((entry) => {
-      const meta = [entry.project_name, entry.component].filter(Boolean).join(" · ");
+      const meta = [activityCategory(entry), activitySource(entry), entry.project_name, entry.component].filter(Boolean).join(" · ");
       return [formatTimeOfDay(entry.timestamp), entry.level, meta ? `${entry.message} (${meta})` : entry.message].join(" ");
     })
     .join("\n");

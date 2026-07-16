@@ -1064,6 +1064,18 @@ code {
   font-size: 0.88rem;
 }
 
+.dashboard-sync-performance {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.dashboard-sync-performance summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-weight: 700;
+}
+
 .dashboard-metrics {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
@@ -1695,6 +1707,60 @@ code {
   font-size: 0.84rem;
 }
 
+.activity-sync-progress {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.activity-sync-progress__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text);
+}
+
+.activity-sync-progress__phase,
+.activity-sync-progress__project,
+.activity-sync-progress__strategy-copy,
+.activity-sync-progress__reason {
+  overflow-wrap: anywhere;
+}
+
+.activity-sync-progress__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.activity-sync-progress__bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.activity-sync-progress__bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width 180ms ease;
+}
+
+.activity-sync-progress__performance summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-weight: 700;
+}
+
 .activity-feed,
 .activity-error-list {
   display: grid;
@@ -1741,10 +1807,18 @@ code {
 }
 
 .activity-feed__subline,
-.activity-error-list__component {
+.activity-error-list__component,
+.activity-feed__category,
+.activity-log-row__category {
   color: var(--text-muted);
   font-size: 0.84rem;
   line-height: 1.35;
+}
+
+.activity-feed__category,
+.activity-log-row__category {
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .activity-log-panel {
@@ -1776,7 +1850,7 @@ code {
 
 .activity-log-row {
   display: grid;
-  grid-template-columns: 72px auto minmax(0, 1fr);
+  grid-template-columns: 72px auto auto minmax(0, 1fr) minmax(120px, auto);
   gap: 8px;
   align-items: start;
   padding: 10px 12px;

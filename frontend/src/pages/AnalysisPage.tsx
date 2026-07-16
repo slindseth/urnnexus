@@ -4,7 +4,7 @@ import { ErrorState } from "../components/ErrorState";
 import { ProjectTable } from "../components/ProjectTable";
 import { StatusPill } from "../components/StatusPill";
 import { useAppData } from "../context/AppDataContext";
-import { ApiRequestError, formatDateTime, getAnalysisStatus, getUserFacingErrorMessage, runAnalysis } from "../lib/api";
+import { ApiRequestError, formatDateTime, getAnalysisStatus, getSyncStatus, getUserFacingErrorMessage, runAnalysis } from "../lib/api";
 import {
   ANALYSIS_STARTING_LABEL,
   ANALYSIS_STARTUP_GRACE_MS,
@@ -15,7 +15,7 @@ import {
   isLockBusyError,
 } from "../lib/applianceStatus";
 import type { ProjectViewModel } from "../lib/projects";
-import type { AnalysisStatusResponse } from "../types";
+import type { AnalysisStatusResponse, SyncStatusResponse } from "../types";
 
 type AnalysisEmailMode = "daily_digest" | "immediate";
 
@@ -55,8 +55,11 @@ function isAnalysisCurrentRun(status: AnalysisStatusResponse | null, startup: An
   if (!status || !startup) {
     return false;
   }
-  if (status.job_id && startup.jobId && status.job_id === startup.jobId) {
-    return true;
+  if (status.run_mode && status.run_mode !== "analysis") {
+    return false;
+  }
+  if (startup.jobId) {
+    return status.job_id === startup.jobId;
   }
   const startedAt = parseAnalysisTimestamp(status.last_started_at ?? status.start_requested_at);
   return startedAt !== null && startedAt >= startup.startedAt - 1000;
@@ -67,6 +70,18 @@ function isAnalysisActive(status: AnalysisStatusResponse | null): boolean {
     return false;
   }
   return Boolean(status.running || status.process_alive || status.lock_exists || status.status === "running");
+}
+
+function isSyncActive(status: SyncStatusResponse | null): boolean {
+  if (!status) {
+    return false;
+  }
+  return Boolean(
+    status.running ||
+      status.process_alive ||
+      status.status === "startup_pending" ||
+      (status.job_type === "sync" && status.activity === "sync"),
+  );
 }
 
 function resolveAnalysisPhase(status: AnalysisStatusResponse | null, startup: AnalysisStartupState | null): "idle" | "starting" | "delayed" | "running" | "failed" | "completed" {
@@ -99,6 +114,7 @@ export function AnalysisPage() {
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatusResponse | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
   const [analysisStatusError, setAnalysisStatusError] = useState<string | null>(null);
   const [analysisStatusLoading, setAnalysisStatusLoading] = useState(true);
   const [analysisStartup, setAnalysisStartup] = useState<AnalysisStartupState | null>(null);
@@ -107,11 +123,14 @@ export function AnalysisPage() {
   const analysisStartupTimerRef = useRef<number | undefined>(undefined);
 
   const graphWriteReady = health?.graph_write_status === "configured";
-  const analysisDisabledReason = healthLoading
-    ? "Kontrollerer Microsoft Graph-write ..."
-    : graphWriteReady
-      ? null
-      : health?.graph_write_detail ?? "Microsoft Graph-write er ikke konfigurert.";
+  const syncActive = isSyncActive(syncStatus);
+  const analysisDisabledReason = syncActive
+    ? "Synkronisering pågår. Analyse kan startes når synkronisering er ferdig."
+    : healthLoading
+      ? "Kontrollerer Microsoft Graph-write ..."
+      : graphWriteReady
+        ? null
+        : health?.graph_write_detail ?? "Microsoft Graph-write er ikke konfigurert.";
   const analysisStartupActive = Boolean(analysisStartup || analysisStatus?.startup_grace_active || isAnalysisStartupStatus(analysisStatus?.status));
   const analysisPhase = resolveAnalysisPhase(analysisStatus, analysisStartup);
   const analysisStartupNoticeVisible = analysisPhase === "starting" || analysisPhase === "delayed";
@@ -234,10 +253,17 @@ export function AnalysisPage() {
 
     async function pollAnalysisStatus() {
       try {
-        const status = await getAnalysisStatus();
+        const [analysisResult, syncResult] = await Promise.allSettled([getAnalysisStatus(), getSyncStatus()]);
         if (cancelled) {
           return;
         }
+        if (syncResult.status === "fulfilled") {
+          setSyncStatus(syncResult.value);
+        }
+        if (analysisResult.status === "rejected") {
+          throw analysisResult.reason;
+        }
+        const status = analysisResult.value;
         const startup = analysisStartupRef.current;
         const isCurrentRun = isAnalysisCurrentRun(status, startup);
         const isStaleStartupStatus =
@@ -248,6 +274,13 @@ export function AnalysisPage() {
           !status.lock_exists;
         if (isStaleStartupStatus) {
           timer = window.setTimeout(pollAnalysisStatus, startup?.graceExpired ? 1000 : ANALYSIS_STARTUP_GRACE_MS / 5);
+          return;
+        }
+        const currentSyncStatus = syncResult.status === "fulfilled" ? syncResult.value : syncStatus;
+        if (isSyncActive(currentSyncStatus)) {
+          setAnalysisStatus(null);
+          setAnalysisStatusError(null);
+          timer = window.setTimeout(pollAnalysisStatus, 3000);
           return;
         }
         setAnalysisStatus(status);
