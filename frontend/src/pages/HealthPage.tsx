@@ -14,7 +14,7 @@ export function HealthPage() {
 
   return (
     <div className="page-stack">
-      <AppHeader title="Helse" />
+      <AppHeader title="Helse" description="Tilgjengelighet, synkronisering og kapasitet i ett overblikk." />
 
       {healthLoading ? (
         <section className="surface surface--padded">
@@ -64,11 +64,20 @@ export function HealthPage() {
             <HealthInfoCard label="Siste rapport opprettet" tooltip="Siste opprettede kommentardokument, basert på created time der det finnes.">
               {health.latest_report_generated_at ? formatDateTime(health.latest_report_generated_at) : "—"}
             </HealthInfoCard>
-            <HealthInfoCard label="OneDrive-status" tooltip="Viser om Nexus finner lokal OneDrive-cache/prosjektdata.">
+            <HealthInfoCard label="OneDrive-status" tooltip="Lokal OneDrive-cache. Dette bekrefter ikke Microsoft-innlogging eller nettverkstilgang.">
               <StatusPill status={health.one_drive_status} />
             </HealthInfoCard>
-            <HealthInfoCard label="Graph-write" tooltip="Viser om Nexus kan opprette, slette og laste opp direkte til OneDrive.">
+            <HealthInfoCard label="Graph-write" tooltip="Viser registrert konfigurasjon. Innlogging, tillatelser og ekstern opplasting er ikke dermed verifisert.">
               <StatusPill status={health.graph_write_status} />
+            </HealthInfoCard>
+            <HealthInfoCard label="Microsoft-innlogging" tooltip="Krever faktisk observert autentisering. Lokal cache og konfigurasjon er ikke tilstrekkelig.">
+              {health.microsoft_auth_verified === true ? "Verifisert" : "Ikke verifisert"}
+            </HealthInfoCard>
+            <HealthInfoCard label="Ekstern rapportopplasting" tooltip="Krever faktisk bekreftet opplasting, ikke bare en generert rapport.">
+              {health.external_upload_verified === true ? "Verifisert" : "Ikke verifisert"}
+            </HealthInfoCard>
+            <HealthInfoCard label="SMTP-levering" tooltip="Krever faktisk leveringsbekreftelse. Konfigurert SMTP er ikke et leveringsbevis.">
+              {health.smtp_delivery_verified === true ? "Verifisert" : "Ikke verifisert"}
             </HealthInfoCard>
 
             <HealthInfoCard label="Diskbruk" tooltip="Brukt diskplass på maskinen.">

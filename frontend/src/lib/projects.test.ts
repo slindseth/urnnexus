@@ -61,6 +61,15 @@ describe("project visibility helpers", () => {
     expect(createProjectViewModel(makeProject("Testprosjekt", true)).sourceLabel).toBe("Demo/lokal sample");
   });
 
+  it.each([
+    ["partial", "Delvis gjennomgått"],
+    ["stale", "Utdatert snapshot"],
+    ["cancelled", "Stoppet"],
+  ])("keeps appliance status %s visible even when a report exists", (status, label) => {
+    const project = { ...makeProject("Prosjektminne", false), status };
+    expect(createProjectViewModel(project).status.label).toBe(label);
+  });
+
   it("maps raw API status and report counts into one shared status model", () => {
     expect(createProjectViewModel(makeProject("Ferdig", false)).status.level).toBe("SUCCESS");
     expect(createProjectViewModel({ ...makeProject("Varsel", false), status: "completed_with_warnings" }).status.level).toBe("SUCCESS_WITH_WARNINGS");

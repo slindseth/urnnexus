@@ -90,7 +90,7 @@ export function ProjectsPage() {
     <div className="page-stack">
       <AppHeader
         title="Prosjekter"
-        description=" "
+        description="Alle prosjekter, dokumenter og rapporter fra OneDrive."
       />
 
       {toastMessage ? <ProjectToast message={toastMessage} /> : null}

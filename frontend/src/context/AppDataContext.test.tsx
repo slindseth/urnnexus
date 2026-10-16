@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from "react";
+import { act, Fragment, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import { AppLayout } from "../components/Layout";
 import { DashboardPage } from "../pages/DashboardPage";
 import { APPLIANCE_BUSY_MESSAGE } from "../lib/applianceStatus";
 import * as api from "../lib/api";
-import { AppDataProvider } from "./AppDataContext";
+import { AppDataProvider, useAppData } from "./AppDataContext";
 import type { AnalysisStatusResponse, HealthResponse, ProjectListResponse, ReadinessResponse, SyncRunResponse, SyncStatusResponse } from "../types";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -81,26 +81,29 @@ function makeReadyResponse(): ReadinessResponse {
   return { ready: true, backend: true, appliance: true, graph: true, status: "ready" };
 }
 
-function renderApp(analysisStatus: AnalysisStatusResponse = makeIdleAnalysisStatus(), routeContent: ReactNode = <div>Body</div>) {
+function renderApp(analysisStatus: AnalysisStatusResponse = makeIdleAnalysisStatus(), routeContent: ReactNode = <div>Body</div>, withStrictMode = false) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   mountedRoot = root;
+  const Wrapper = withStrictMode ? StrictMode : Fragment;
 
   vi.spyOn(api, "getAnalysisStatus").mockResolvedValue(analysisStatus);
   vi.spyOn(api, "getSystemReadiness").mockResolvedValue(makeReadyResponse());
 
   act(() => {
     root.render(
-      <MemoryRouter initialEntries={["/"]}>
-        <AppDataProvider>
-          <Routes>
-            <Route element={<AppLayout />}>
-              <Route index element={routeContent} />
-            </Route>
-          </Routes>
-        </AppDataProvider>
-      </MemoryRouter>,
+      <Wrapper>
+        <MemoryRouter initialEntries={["/"]}>
+          <AppDataProvider>
+            <Routes>
+              <Route element={<AppLayout />}>
+                <Route index element={routeContent} />
+              </Route>
+            </Routes>
+          </AppDataProvider>
+        </MemoryRouter>
+      </Wrapper>,
     );
   });
 
@@ -208,6 +211,69 @@ afterEach(() => {
   mountedRoot = null;
   document.body.innerHTML = "";
   window.localStorage.clear();
+});
+
+function RetryStartupButton() {
+  const { retryStartup } = useAppData();
+  return <button onClick={retryStartup}>Retry startup</button>;
+}
+
+describe("AppDataProvider startup lifecycle", () => {
+  it("recovers startup after StrictMode effect cleanup and loads dashboard data", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T09:00:00+02:00"));
+    const getProjectsSpy = vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    const getHealthSpy = vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    vi.spyOn(api, "getSyncStatus").mockResolvedValue(makeCompletedSyncStatus());
+    const runSyncSpy = vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+
+    const { container } = renderApp(makeIdleAnalysisStatus(), <div>Body</div>, true);
+    await act(async () => {
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(container.textContent).not.toContain("Starter NEXUS");
+    expect(container.textContent).not.toContain("NEXUS kunne ikke starte");
+    expect(getProjectsSpy).toHaveBeenCalledTimes(1);
+    expect(getHealthSpy).toHaveBeenCalledTimes(1);
+    expect(runSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it("resumes daily sync polling after startup is retried without duplicating the job", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T09:00:00+02:00"));
+    const getProjectsSpy = vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    const getSyncStatusSpy = vi.spyOn(api, "getSyncStatus").mockResolvedValue(makeRunningSyncStatus());
+    const runSyncSpy = vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+    const { container } = renderApp(makeIdleAnalysisStatus(), <RetryStartupButton />, true);
+
+    await act(async () => {
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Vent et øyeblikk mens OneDrive synkroniseres");
+
+    await act(async () => {
+      const retryButton = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Retry startup",
+      );
+      if (!retryButton) throw new Error("Missing startup retry button");
+      retryButton.click();
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Vent et øyeblikk mens OneDrive synkroniseres");
+
+    getSyncStatusSpy.mockResolvedValue(makeCompletedSyncStatus());
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("Vent et øyeblikk mens OneDrive synkroniseres");
+    expect(getProjectsSpy).toHaveBeenCalledTimes(3);
+    expect(runSyncSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("AppDataProvider daily sync", () => {

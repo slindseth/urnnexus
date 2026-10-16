@@ -1,6 +1,7 @@
 import { ProjectIssuesPanel } from "../components/ProjectIssuesPanel";
 import { formatDateTime } from "../lib/api";
 import { useProjectPageContext } from "./ProjectPage";
+import { MemoryProjectPanel } from "../components/MemoryProjectPanel";
 
 function infoValue(value: string | null | undefined): string {
   return value && value.trim().length > 0 ? value : "—";
@@ -11,6 +12,7 @@ export function ProjectOverviewPage() {
 
   return (
     <div className="section-stack">
+      <MemoryProjectPanel key={project.projectName} projectName={project.projectName} variant="summary" />
       <section className="surface surface--padded">
         <div className="section-head">
           <div>

@@ -39,6 +39,9 @@ class HealthResponse(ApiModel):
     openai_detail: str | None = None
     smtp_status: str = "unknown"
     smtp_detail: str | None = None
+    microsoft_auth_verified: bool | None = None
+    external_upload_verified: bool | None = None
+    smtp_delivery_verified: bool | None = None
     disk_total_bytes: int | None = None
     disk_used_bytes: int | None = None
     disk_free_bytes: int | None = None

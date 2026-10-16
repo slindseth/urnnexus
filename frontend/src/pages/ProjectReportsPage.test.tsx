@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { createProjectViewModel } from "../lib/projects";
 import type { ProjectPageContext } from "./ProjectPage";
@@ -85,9 +86,9 @@ mocks.reportsResponse = {
 
 describe("ProjectReportsPage", () => {
   it("shows only the project and latest report metadata cards above the report table", () => {
-    const markup = renderToStaticMarkup(<ProjectReportsPage />);
+    const markup = renderToStaticMarkup(<MemoryRouter><ProjectReportsPage /></MemoryRouter>);
 
-    expect(markup).toContain("Rapporthistorikk");
+    expect(markup).toContain("Andre rapportfiler og eldre rapporter");
     expect(markup).toContain("Prosjekt");
     expect(markup).toContain("Siste rapport opprettet");
     expect(markup).not.toContain("Sti");

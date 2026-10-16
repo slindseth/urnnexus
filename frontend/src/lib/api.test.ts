@@ -124,44 +124,19 @@ describe("api sync", () => {
     expect(logsResponse.entries).toEqual([]);
   });
 
-  it("calls the analysis endpoint for the Analysis page flow", async () => {
+  it("acknowledges the legacy start route without inventing a durable job or delivery result", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          job_id: "analysis-job",
-          running: true,
-          started_at: "2026-06-09T09:00:00+02:00",
-          status: "started",
-          analysis_started: true,
-          reports_generated: 0,
-          projects_synced: 0,
-          files_changed: 0,
-          reports_found: 0,
-          email_mode: "daily_digest",
-          project_name: "Bryn Skole",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      ),
-    );
-
-    const response = await runAnalysis({ project_name: "Bryn Skole", email_mode: "daily_digest" });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/analysis/start",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          project_name: "Bryn Skole",
-          email_mode: "daily_digest",
-        }),
+      new Response(JSON.stringify({ accepted: true, job_id: null, launch_pending: true }), {
+        status: 202, headers: { "Content-Type": "application/json" },
       }),
     );
-    expect(response.analysis_started).toBe(true);
-    expect(response.reports_generated).toBe(0);
-    expect(response.email_mode).toBe("daily_digest");
+    const response = await runAnalysis({ project_name: "Bryn Skole", email_mode: "daily_digest" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/analysis/start", expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ "X-Nexus-Action": "project-memory" }),
+      body: JSON.stringify({ project_name: "Bryn Skole", email_mode: "daily_digest" }),
+    }));
+    expect(response).toEqual({ accepted: true, job_id: null, launch_pending: true });
   });
 
   it("reads the analysis status endpoint for progress refresh", async () => {

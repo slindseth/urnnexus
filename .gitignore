@@ -10,3 +10,5 @@ coverage/
 __pycache__/
 *.py[cod]
 *.tsbuildinfo
+.nexus-runtime/
+browser-artifacts/

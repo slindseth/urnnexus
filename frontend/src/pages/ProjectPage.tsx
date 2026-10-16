@@ -1,4 +1,4 @@
-import { useOutletContext, useParams, Outlet, Link } from "react-router-dom";
+import { useOutletContext, useParams, useLocation, Outlet, Link } from "react-router-dom";
 import { ErrorState } from "../components/ErrorState";
 import { ProjectHeader } from "../components/Layout";
 import { Tabs } from "../components/Tabs";
@@ -31,14 +31,16 @@ function formatLatestReport(project: ProjectViewModel): string {
 export function ProjectPage() {
   const { projectName: routeProjectName = "" } = useParams();
   const projectName = safeDecodeProjectName(routeProjectName);
+  const selectedJob = new URLSearchParams(useLocation().search).get("job");
   const { data: project, loading, error, reload } = useResource(() => getProject(projectName), [projectName]);
 
   const tabs = projectName
     ? [
         { to: projectUrl(projectName), label: "Oversikt" },
+        { to: projectUrl(projectName, "review"), label: "Funn og kilder" },
         { to: projectUrl(projectName, "files"), label: "Filer" },
         { to: projectUrl(projectName, "reports"), label: "Rapporter" },
-      ]
+      ].map((tab) => ({ ...tab, to: tab.to + (selectedJob ? `?job=${encodeURIComponent(selectedJob)}` : "") }))
     : [];
 
   return (

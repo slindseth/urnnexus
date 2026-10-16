@@ -126,6 +126,19 @@ APPLIANCE_BUSY_MESSAGE = "Appliance arbeider. Synk kan startes når aktiv jobb e
 ACTIVITY_JOURNAL_FILENAME = "urn_nexus_activity.jsonl"
 ACTIVITY_CACHE_TTL_SECONDS = 3.0
 HEALTH_CACHE_TTL_SECONDS = 5.0
+REPORT_HISTORY_CACHE_MAX_FILES = 16
+_REPORT_HISTORY_FIELDS = (
+    "project_name", "remote_root_path", "local_project_root", "local_report_path",
+    "output_docx_path", "local_output_path", "report_type", "timestamp",
+    "uploaded_reports", "report_snapshot", "analysis_snapshot",
+)
+_REPORT_HISTORY_SNAPSHOT_FIELDS = (
+    "project_name", "generated_at", "finished_at", "created_at",
+    "local_report_path", "output_docx_path",
+)
+_REPORT_HISTORY_UPLOAD_FIELDS = (
+    "remote_path", "local_path", "local_report_path", "local_output_path",
+)
 ACTIVITY_EVENT_LIMIT = 40
 ACTIVITY_ERROR_LIMIT = 10
 ACTIVITY_LOG_LIMIT = 160
@@ -938,6 +951,14 @@ class ApplianceService:
         self._activity_cache_timestamp = 0.0
         self._activity_cache: ActivityFeedSnapshot | None = None
         self._activity_journal_lock = threading.Lock()
+        self._health_build_lock = threading.Lock()
+        self._activity_build_lock = threading.Lock()
+        self._report_history_cache_lock = threading.Lock()
+        self._report_history_cache: dict[
+            Path, tuple[tuple[int, ...], tuple[dict[str, Any], ...]]
+        ] = {}
+        from .project_memory import ProjectMemoryGateway
+        self.memory = ProjectMemoryGateway(self)
 
     def health(self) -> HealthResponse:
         return self._cached_health()
@@ -978,11 +999,16 @@ class ApplianceService:
             if self._health_cache is not None and now - self._health_cache_timestamp < HEALTH_CACHE_TTL_SECONDS:
                 return self._health_cache
 
-        health = self._calculate_health()
-        with self._health_cache_lock:
-            self._health_cache_timestamp = time.monotonic()
-            self._health_cache = health
-        return health
+        # Concurrent API calls share one refresh instead of repeating the scan.
+        with self._health_build_lock:
+            with self._health_cache_lock:
+                if self._health_cache is not None and time.monotonic() - self._health_cache_timestamp < HEALTH_CACHE_TTL_SECONDS:
+                    return self._health_cache
+            health = self._calculate_health()
+            with self._health_cache_lock:
+                self._health_cache_timestamp = time.monotonic()
+                self._health_cache = health
+            return health
 
     def _calculate_health(self) -> HealthResponse:
         appliance_root = self.settings.resolved_appliance_root()
@@ -1003,7 +1029,10 @@ class ApplianceService:
             version=get_app_version(),
             appliance_root=appliance_root,
             discovered_projects=discovered_projects,
-            last_synced_at=self._latest_datetime(record.last_synced_at for record in records),
+            last_synced_at=self._latest_datetime([
+                *(record.last_synced_at for record in records),
+                self._last_successful_sync_at(),
+            ]),
             last_analyzed_at=self._latest_datetime(record.last_analyzed_at for record in records),
             latest_report_generated_at=latest_report_generated_at,
             project_count=discovered_projects,
@@ -1023,6 +1052,15 @@ class ApplianceService:
             cache_size_bytes=self._cache_size_bytes(appliance_root),
             errors_last_24h=sum(self._record_error_count_since(record, cutoff) for record in records),
             warnings_last_24h=sum(self._record_warning_count_since(record, cutoff) for record in records),
+        )
+
+    def _last_successful_sync_at(self) -> datetime | None:
+        # A no-change sync may leave project timestamps unchanged. The journal
+        # preserves successful completion times across backend restarts.
+        return self._latest_datetime(
+            _parse_datetime(str(payload.get("timestamp") or ""))
+            for payload in self._read_activity_journal_payloads()
+            if payload.get("event_code") in {"sync_completed", "sync_completed_no_changes"}
         )
 
     def activity_status(self) -> ActivityStatusResponse:
@@ -1047,11 +1085,16 @@ class ApplianceService:
             if self._activity_cache is not None and now - self._activity_cache_timestamp < ACTIVITY_CACHE_TTL_SECONDS:
                 return self._activity_cache
 
-        feed = self._calculate_activity_feed()
-        with self._activity_cache_lock:
-            self._activity_cache_timestamp = time.monotonic()
-            self._activity_cache = feed
-        return feed
+        # Status, events and logs are requested together by the activity page.
+        with self._activity_build_lock:
+            with self._activity_cache_lock:
+                if self._activity_cache is not None and time.monotonic() - self._activity_cache_timestamp < ACTIVITY_CACHE_TTL_SECONDS:
+                    return self._activity_cache
+            feed = self._calculate_activity_feed()
+            with self._activity_cache_lock:
+                self._activity_cache_timestamp = time.monotonic()
+                self._activity_cache = feed
+            return feed
 
     def _calculate_activity_feed(self) -> ActivityFeedSnapshot:
         health = self._cached_health()
@@ -1943,11 +1986,12 @@ class ApplianceService:
             for record in records
         ]
         warnings = self._collect_global_warnings(records)
+        projects = [item.model_copy(update=self.memory.latest_summary(record)) for item, record in zip(projects, records)]
         return ProjectListResponse(count=len(projects), projects=projects, warnings=warnings)
 
     def get_project(self, project_name: str) -> ProjectDetailResponse:
         record = self._get_project_record(project_name)
-        return ProjectDetailResponse(
+        detail = ProjectDetailResponse(
             display_name=record.display_name,
             source_label=record.source_label,
             relative_project_path=record.relative_project_path,
@@ -1971,6 +2015,7 @@ class ApplianceService:
             analysis=record.analysis,
             reports=record.reports,
         )
+        return detail.model_copy(update=self.memory.latest_summary(record))
 
     def list_reports(self, project_name: str) -> ProjectReportsResponse:
         record = self._get_project_record(project_name, load_files=False)
@@ -2704,6 +2749,7 @@ class ApplianceService:
             sync_running=self._is_process_active(self._sync_state.process),
             analysis_running=self._is_process_active(self._analysis_state.process),
         )
+        snapshot.analysis_running = snapshot.analysis_running or self.memory.launch_active()
 
         for lock_path in self._runtime_history_lock_paths():
             if not lock_path.exists():
@@ -2839,6 +2885,13 @@ class ApplianceService:
         if include_local_cache:
             records.extend(self._discover_local_portal_projects())
         records.extend(self._discover_sample_projects())
+        definitions = self.memory.definitions()
+        configured_names = {item.name.casefold() for item in definitions}
+        records = [record for record in records if record.project_name.casefold() not in configured_names]
+        for item in definitions:
+            if item.project_root.is_dir():
+                record = self._build_project_record(item.project_root, source="project_memory", explicit_project_name=item.name)
+                records.append(replace(record, source_label="Lokalt prosjektminne", last_synced_at=None))
         if not include_hidden:
             hidden_names = self._hidden_project_names()
             records = [record for record in records if _normalize_name(record.project_name) not in hidden_names]
@@ -3636,20 +3689,12 @@ class ApplianceService:
 
         for history_path in self._report_history_paths():
             try:
-                content = history_path.read_text(encoding="utf-8")
+                payloads = self._read_report_history(history_path)
             except Exception as exc:
                 logger.warning("Unable to read report history %s: %s", history_path, exc)
                 continue
 
-            for line in content.splitlines():
-                raw_line = line.strip()
-                if not raw_line:
-                    continue
-                try:
-                    payload = json.loads(raw_line)
-                except Exception:
-                    continue
-
+            for payload in payloads:
                 if not self._history_entry_matches_project(payload, project_name_normalized):
                     continue
 
@@ -3676,6 +3721,62 @@ class ApplianceService:
 
         fallback_reports.sort(key=_sort_comment_documents_key, reverse=True)
         return fallback_reports
+
+    def _read_report_history(self, history_path: Path) -> tuple[dict[str, Any], ...]:
+        """Share parsed report metadata across projects, refreshing on file changes."""
+
+        def file_signature() -> tuple[int, ...]:
+            stat = history_path.stat()
+            return (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+
+        # Health and project requests arrive together. Only one may parse a
+        # changed history file; the others reuse its completed snapshot.
+        with self._report_history_cache_lock:
+            signature = file_signature()
+            cached = self._report_history_cache.get(history_path)
+            if cached is not None and cached[0] == signature:
+                return cached[1]
+
+            self._report_history_cache.pop(history_path, None)
+            payloads: list[dict[str, Any]] = []
+            # Stream large JSONL files and retain only report metadata. Source
+            # documents and analysis details are not needed for report listings.
+            with history_path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if not isinstance(parsed, Mapping):
+                        continue
+                    payload = {key: parsed[key] for key in _REPORT_HISTORY_FIELDS if key in parsed}
+                    for key in ("report_snapshot", "analysis_snapshot"):
+                        snapshot = payload.get(key)
+                        if isinstance(snapshot, Mapping):
+                            payload[key] = {
+                                field: snapshot[field]
+                                for field in _REPORT_HISTORY_SNAPSHOT_FIELDS if field in snapshot
+                            }
+                    uploaded = payload.get("uploaded_reports")
+                    if isinstance(uploaded, list):
+                        payload["uploaded_reports"] = [
+                            {field: report[field] for field in _REPORT_HISTORY_UPLOAD_FIELDS if field in report}
+                            for report in uploaded if isinstance(report, Mapping)
+                        ]
+                    payloads.append(payload)
+
+            result = tuple(payloads)
+            try:
+                unchanged = file_signature() == signature
+            except OSError:
+                unchanged = False
+            if unchanged:
+                if len(self._report_history_cache) >= REPORT_HISTORY_CACHE_MAX_FILES:
+                    self._report_history_cache.pop(next(iter(self._report_history_cache)))
+                self._report_history_cache[history_path] = (signature, result)
+            return result
 
     def _report_history_paths(self) -> list[Path]:
         candidates: list[Path] = []

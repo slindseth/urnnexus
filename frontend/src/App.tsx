@@ -10,6 +10,7 @@ import { ProjectFilesPage } from "./pages/ProjectFilesPage";
 import { ProjectOverviewPage } from "./pages/ProjectOverviewPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { ProjectReportsPage } from "./pages/ProjectReportsPage";
+import { ProjectReviewPage } from "./pages/ProjectReviewPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 
 export function App() {
@@ -24,6 +25,7 @@ export function App() {
         <Route path="/health" element={<HealthPage />} />
         <Route path="/projects/:projectName" element={<ProjectPage />}>
           <Route index element={<ProjectOverviewPage />} />
+          <Route path="review" element={<ProjectReviewPage />} />
           <Route path="files" element={<ProjectFilesPage />} />
           <Route path="reports" element={<ProjectReportsPage />} />
         </Route>

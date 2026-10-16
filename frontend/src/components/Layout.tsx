@@ -1,4 +1,11 @@
-import { useEffect, useState, type ReactNode, type SVGProps } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  IconLayoutGrid as DashboardIcon, IconFolder as ProjectsIcon,
+  IconChartBar as AnalysisIcon, IconHeartbeat as HealthIcon,
+  IconListDetails as ActivityIcon, IconInfoCircle as AboutIcon,
+  IconSun as SunIcon, IconMoon as MoonIcon, IconRefresh,
+  IconX, IconCloudDownload, IconAlertTriangle,
+} from "@tabler/icons-react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAppData, type DailySyncState } from "../context/AppDataContext";
 import { StatusPill } from "./StatusPill";
@@ -98,11 +105,11 @@ export function AppLayout() {
           <div className="global-toolbar" aria-label="Globale valg">
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
           </div>
+          {dailySync && startupState === "ready" ? <DailySyncBanner state={dailySync} onDismiss={dismissDailySync ?? (() => undefined)} onRetry={retryDailySync ?? (() => undefined)} /> : null}
           <Outlet />
         </div>
       </main>
       {startupState && startupState !== "ready" ? <StartupOverlay state={startupState} error={startupError ?? null} onRetry={retryStartup ?? (() => undefined)} /> : null}
-      {dailySync && startupState === "ready" ? <DailySyncOverlay state={dailySync} onDismiss={dismissDailySync ?? (() => undefined)} onRetry={retryDailySync ?? (() => undefined)} /> : null}
     </div>
   );
 }
@@ -168,7 +175,7 @@ function ThemeToggle({ theme, onToggle }: { theme: ThemeMode; onToggle: () => vo
 }
 
 function Sidebar() {
-  const { healthError } = useAppData();
+  const { healthError, health } = useAppData();
 
   return (
     <aside className="sidebar">
@@ -194,7 +201,13 @@ function Sidebar() {
         <SidebarNavItem to="/about" label="Om" icon={<AboutIcon />} />
       </SidebarSection>
 
-      {healthError ? <div className="sidebar__error">{healthError}</div> : null}
+      <div className="sidebar__footer">
+        <span>Urban Reuse Norway</span>
+        <Link to="/health" className="sidebar__service">
+          <StatusPill status={health?.appliance_available ? "online" : "pending"} label={health?.appliance_available ? "Tjenestene er klare" : "Se systemstatus"} />
+        </Link>
+        {healthError ? <div className="sidebar__error">{healthError}</div> : null}
+      </div>
     </aside>
   );
 }
@@ -231,93 +244,6 @@ function SidebarNavItem({
   );
 }
 
-function DashboardIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <rect x="2.5" y="2.5" width="4" height="4" rx="1" />
-      <rect x="9.5" y="2.5" width="4" height="4" rx="1" />
-      <rect x="2.5" y="9.5" width="4" height="4" rx="1" />
-      <rect x="9.5" y="9.5" width="4" height="4" rx="1" />
-    </svg>
-  );
-}
-
-function ProjectsIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M2.5 5.25A1.25 1.25 0 0 1 3.75 4h3l1.2 1.4H12.25A1.25 1.25 0 0 1 13.5 6.65v4.1A1.25 1.25 0 0 1 12.25 12H3.75A1.25 1.25 0 0 1 2.5 10.75z" />
-      <path d="M2.5 6.1h11" />
-    </svg>
-  );
-}
-
-function AnalysisIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M2.5 11.5h11" />
-      <path d="M4.5 9.5l2.1-2.1 1.8 1.5L12 5.3" />
-      <circle cx="4.5" cy="9.5" r=".7" fill="currentColor" stroke="none" />
-      <circle cx="6.6" cy="7.4" r=".7" fill="currentColor" stroke="none" />
-      <circle cx="8.4" cy="8.9" r=".7" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="5.3" r=".7" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function HealthIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M2.5 8h2.1l1.4-2.8 1.8 5.6 1.5-3h4.2" />
-      <path d="M13.5 8.2A5.5 5.5 0 0 1 8 13.5 5.5 5.5 0 0 1 2.5 8a5.5 5.5 0 0 1 11 0Z" />
-    </svg>
-  );
-}
-
-function ActivityIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M3 4.5h10" />
-      <path d="M3 8h6.5" />
-      <path d="M3 11.5h10" />
-      <circle cx="11.8" cy="8" r=".8" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function AboutIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <circle cx="8" cy="8" r="5.5" />
-      <path d="M8 7.2v3.6" />
-      <path d="M8 5.1h.01" />
-    </svg>
-  );
-}
-
-function SunIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <circle cx="8" cy="8" r="2.6" />
-      <path d="M8 1.8v1.3" />
-      <path d="M8 12.9v1.3" />
-      <path d="m3.6 3.6.9.9" />
-      <path d="m11.5 11.5.9.9" />
-      <path d="M1.8 8h1.3" />
-      <path d="M12.9 8h1.3" />
-      <path d="m3.6 12.4.9-.9" />
-      <path d="m11.5 4.5.9-.9" />
-    </svg>
-  );
-}
-
-function MoonIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M13.4 9.5A5.2 5.2 0 0 1 6.5 2.6 5.5 5.5 0 1 0 13.4 9.5Z" />
-    </svg>
-  );
-}
-
 export function AppHeader({
   title,
   description,
@@ -333,10 +259,11 @@ export function AppHeader({
       <div>
         {eyebrow ? <div className="page-header__eyebrow">{eyebrow}</div> : null}
         <h1 className="page-header__title">{title}</h1>
-        {description ? <p className="page-header__description">{description}</p> : null}
+        {description?.trim() ? <p className="page-header__description">{description}</p> : null}
       </div>
       <div className="page-header__actions">
         <button type="button" className="button button--secondary" onClick={refresh}>
+          <IconRefresh size={16} stroke={1.7} aria-hidden="true" />
           Oppdater visning
         </button>
       </div>
@@ -379,77 +306,24 @@ export function ProjectHeader({
   );
 }
 
-function DailySyncOverlay({ state, onDismiss, onRetry }: { state: DailySyncState; onDismiss: () => void; onRetry: () => void }) {
-  if (state.mode === "onboarding") {
-    return <OnboardingOverlay title={state.title} message={state.message} detail={state.detail} />;
-  }
-  if (state.mode === "warning") {
-    return <RecoverableWarningOverlay title={state.title} message={state.message} detail={state.detail} onDismiss={onDismiss} onRetry={onRetry} />;
-  }
-  return <FatalSyncErrorOverlay title={state.title} message={state.message} detail={state.detail} onRetry={onRetry} />;
-}
-
-function OnboardingOverlay({ title, message, detail }: { title: string; message: string; detail: string | null }) {
+function DailySyncBanner({ state, onDismiss, onRetry }: { state: DailySyncState; onDismiss: () => void; onRetry: () => void }) {
+  const isRunning = state.mode === "onboarding";
   return (
-    <div className="modal-backdrop modal-backdrop--sync" role="presentation">
-      <section className="modal-panel modal-panel--sync" role="status" aria-live="polite" aria-busy="true" aria-labelledby="daily-sync-title" aria-describedby="daily-sync-description">
-        <div className="sync-loader" aria-hidden="true" />
-        <div className="section-kicker">OneDrive</div>
-        <h2 className="section-title" id="daily-sync-title">
-          {title}
-        </h2>
-        <p className="modal-copy" id="daily-sync-description">
-          {message}
-        </p>
-        {detail ? <div className="sync-loader__detail">{detail}</div> : null}
-      </section>
-    </div>
-  );
-}
-
-function RecoverableWarningOverlay({
-  title,
-  message,
-  detail,
-  onDismiss,
-  onRetry,
-}: {
-  title: string;
-  message: string;
-  detail: string | null;
-  onDismiss: () => void;
-  onRetry: () => void;
-}) {
-  return (
-    <div className="modal-backdrop modal-backdrop--sync" role="presentation">
-      <section className="modal-panel modal-panel--sync" role="dialog" aria-modal="true" aria-labelledby="sync-warning-title" aria-describedby="sync-warning-description">
-        <div className="section-kicker">OneDrive</div>
-        <h2 className="section-title" id="sync-warning-title">{title}</h2>
-        <p className="modal-copy" id="sync-warning-description">{message}</p>
-        {distinctDetail(message, detail) ? <div className="sync-loader__detail">{detail}</div> : null}
-        <div className="modal-panel__actions modal-panel__actions--sync">
-          <button type="button" className="button button--secondary" onClick={onRetry}>Prøv igjen</button>
-          <Link className="button" to="/activity" onClick={onDismiss}>Se detaljer</Link>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function FatalSyncErrorOverlay({ title, message, detail, onRetry }: { title: string; message: string; detail: string | null; onRetry: () => void }) {
-  return (
-    <div className="modal-backdrop modal-backdrop--sync" role="presentation">
-      <section className="modal-panel modal-panel--sync" role="alertdialog" aria-modal="true" aria-labelledby="sync-failure-title" aria-describedby="sync-failure-description">
-        <div className="section-kicker">OneDrive</div>
-        <h2 className="section-title" id="sync-failure-title">{title}</h2>
-        <p className="modal-copy" id="sync-failure-description">{message}</p>
-        {distinctDetail(message, detail) ? <div className="sync-loader__detail">{detail}</div> : null}
-        <div className="modal-panel__actions modal-panel__actions--sync">
-          <button type="button" className="button button--secondary" onClick={onRetry}>Prøv synkronisering på nytt</button>
-          <Link className="button" to="/activity">Gå til Aktivitet</Link>
-        </div>
-      </section>
-    </div>
+    <section className={`sync-banner sync-banner--${state.mode}`} role={isRunning ? "status" : "alert"} aria-live="polite">
+      <span className="sync-banner__icon" aria-hidden="true">
+        {isRunning ? <IconCloudDownload size={22} stroke={1.7} /> : <IconAlertTriangle size={22} stroke={1.7} />}
+      </span>
+      <div className="sync-banner__copy">
+        <strong>{state.title}</strong>
+        <p>{state.message}</p>
+        {distinctDetail(state.message, state.detail) ? <small>{state.detail}</small> : null}
+      </div>
+      <div className="sync-banner__actions">
+        {!isRunning ? <button type="button" className="button button--secondary" onClick={onRetry}>{state.mode === "fatal" ? "Prøv synkronisering på nytt" : "Prøv igjen"}</button> : null}
+        <Link className="button button--subtle" to="/activity" onClick={onDismiss}>{state.mode === "fatal" ? "Gå til Aktivitet" : "Se detaljer"}</Link>
+        <button type="button" className="icon-button" aria-label="Skjul synkmelding" onClick={onDismiss}><IconX size={18} stroke={1.7} aria-hidden="true" /></button>
+      </div>
+    </section>
   );
 }
 

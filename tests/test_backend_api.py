@@ -34,13 +34,14 @@ class _AsyncAppClient:
         path: str,
         *,
         json: object | None = None,
+        headers: dict[str, str] | None = None,
         data: dict[str, str] | None = None,
         files: dict[str, tuple[str, bytes, str]] | None = None,
     ) -> httpx.Response:
         async def _request() -> httpx.Response:
             transport = httpx.ASGITransport(app=self._app)
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-                return await client.post(path, json=json, data=data, files=files)
+                return await client.post(path, json=json, headers=headers, data=data, files=files)
 
         return asyncio.run(_request())
 
@@ -1982,108 +1983,17 @@ def test_sync_endpoint_fails_safely_when_sync_only_is_unavailable(monkeypatch: p
     assert started_commands == []
 
 
-def test_analysis_endpoint_starts_full_pipeline_for_selected_project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    appliance_root = tmp_path / "appliance"
-    script_path = appliance_root / "scripts" / "run_onedrive_appliance.py"
-    script_path.parent.mkdir(parents=True, exist_ok=True)
-    script_path.write_text("# supports --force-analyze --provider --email-mode\n", encoding="utf-8")
-    started_commands: list[list[str]] = []
-
-    class DummyProcess:
-        returncode: int | None = None
-
-        def poll(self) -> int | None:
-            return self.returncode
-
-        def communicate(self) -> tuple[str, str]:
-            self.returncode = 0
-            return (
-                json.dumps(
-                    {
-                        "project_name": "Bryn Skole",
-                        "status": "completed",
-                        "email_status": "sent",
-                        "email_mode": "immediate",
-                        "reports_generated": 1,
-                        "per_root_results": [
-                            {
-                                "root_name": "Bryn Skole",
-                                "status": "completed",
-                                "changed_files": 2,
-                                "reports_found": 1,
-                                "reports_generated": 1,
-                                "uploaded_reports": [{"status": "uploaded", "report_name": "Bryn Skole - Kommentardokument.docx"}],
-                            }
-                        ],
-                        "uploaded_reports": [
-                            {"status": "uploaded", "report_name": "Bryn Skole - Kommentardokument.docx"}
-                        ],
-                    }
-                ),
-                "",
-            )
-
-    def fake_popen(command: list[str], **_: object) -> DummyProcess:
-        started_commands.append(command)
-        return DummyProcess()
-
-    monkeypatch.setattr("backend.app.services.appliance.subprocess.Popen", fake_popen)
-    client = _client(ApplianceSettings(appliance_root=appliance_root))
-
-    response = client.post(
-        "/api/analysis/run",
-        json={"project_name": "Bryn Skole", "email_mode": "immediate"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["running"] is True
-    assert payload["status"] == "started"
-    assert payload["analysis_started"] is True
-    assert payload["reports_generated"] == 0
-    assert payload["projects_synced"] == 0
-    assert payload["files_changed"] == 0
-    assert payload["reports_found"] == 0
-    assert payload["email_mode"] == "immediate"
-    assert payload["project_name"] == "Bryn Skole"
-    assert started_commands
-    assert "run_onedrive_appliance.py" in started_commands[0][1]
-    assert "--once" in started_commands[0]
-    assert "--all-roots" in started_commands[0]
-    assert "--force-analyze" in started_commands[0]
-    assert "--provider" in started_commands[0]
-    assert "openai" in started_commands[0]
-    assert "--email-mode" in started_commands[0]
-    assert "immediate" in started_commands[0]
-    assert "--analysis-profile" in started_commands[0]
-    assert "enterprise_review" in started_commands[0]
-    assert "--report-type" in started_commands[0]
-    assert "--include-root-folder" in started_commands[0]
-    assert "Bryn Skole" in started_commands[0]
-    assert "--sync-only" not in started_commands[0]
-    trigger_index = started_commands[0].index("--trigger-source")
-    assert started_commands[0][trigger_index + 1] == "nexus_analysis"
-    assert payload["job_type"] == "analysis"
-    assert payload["run_mode"] == "analysis"
-
-    status_payload = None
-    for _ in range(50):
-        status_response = client.get("/api/analysis/status")
-        assert status_response.status_code == 200
-        status_payload = status_response.json()
-        if status_payload["last_completed_at"] is not None:
-            break
-        time.sleep(0.01)
-
-    assert status_payload is not None
-    assert status_payload["running"] is False
-    assert status_payload["status"] == "completed"
-    assert status_payload["reports_generated"] == 1
-    assert status_payload["projects_synced"] == 1
-    assert status_payload["files_changed"] == 2
-    assert status_payload["reports_found"] == 1
-    assert status_payload["email_mode"] == "immediate"
-    assert status_payload["project_name"] == "Bryn Skole"
+def test_analysis_endpoint_delegates_selected_project_to_memory_without_delivery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    app = create_app(ApplianceSettings(appliance_root=tmp_path))
+    calls = []
+    def start(name, action):
+        calls.append((name, action.mode))
+        return dict(accepted=True, job_id=None, launch_pending=True)
+    monkeypatch.setattr(app.state.appliance_service.memory, "start", start)
+    response = _AsyncAppClient(app).post("/api/analysis/run", json={"project_name": "Bryn Skole", "email_mode": "immediate"}, headers={"X-Nexus-Action": "project-memory"})
+    assert response.status_code == 202
+    assert response.json() == dict(accepted=True, job_id=None, launch_pending=True)
+    assert calls == [("Bryn Skole", "incremental")]
 
 
 def test_analysis_status_clears_stale_lock_error_when_process_is_not_running(tmp_path: Path) -> None:
@@ -2198,27 +2108,12 @@ def test_analysis_status_classifies_terminal_failures(tmp_path: Path, last_error
     assert payload["last_error"] == last_error
 
 
-def test_analysis_endpoint_fails_safely_when_full_pipeline_is_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    appliance_root = tmp_path / "appliance"
-    script_path = appliance_root / "scripts" / "run_onedrive_appliance.py"
-    script_path.parent.mkdir(parents=True, exist_ok=True)
-    script_path.write_text("# no safe analysis pipeline flags here\n", encoding="utf-8")
-    started_commands: list[list[str]] = []
-
-    def fake_popen(command: list[str], **_: object) -> object:
-        started_commands.append(command)
-        raise AssertionError("Nexus must not start analysis when the appliance pipeline is unavailable.")
-
-    monkeypatch.setattr("backend.app.services.appliance.subprocess.Popen", fake_popen)
-    client = _client(ApplianceSettings(appliance_root=appliance_root))
-
-    response = client.post("/api/analysis/run", json={"email_mode": "daily_digest"})
-
-    assert response.status_code == 503
-    payload = response.json()
-    assert payload["code"] == "analysis_unavailable"
-    assert payload["detail"] == "Nexus kan ikke starte analyse før appliance støtter full analysepipeline."
-    assert started_commands == []
+def test_analysis_endpoint_requires_explicit_action_and_selected_project(tmp_path: Path) -> None:
+    client = _client(ApplianceSettings(appliance_root=tmp_path))
+    assert client.post("/api/analysis/run", json={}).status_code == 403
+    response = client.post("/api/analysis/run", json={}, headers={"X-Nexus-Action": "project-memory"})
+    assert response.status_code == 400
+    assert "prosjekt" in response.json()["detail"]
 
 
 def test_activity_endpoints_return_empty_state(tmp_path: Path) -> None:

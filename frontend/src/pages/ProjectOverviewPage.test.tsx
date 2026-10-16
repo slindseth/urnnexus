@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { createProjectViewModel } from "../lib/projects";
 import type { ProjectPageContext } from "./ProjectPage";
@@ -63,7 +64,7 @@ mocks.projectContext = {
 
 describe("ProjectOverviewPage", () => {
   it("keeps the useful cards and removes status and analysis basis metadata", () => {
-    const markup = renderToStaticMarkup(<ProjectOverviewPage />);
+    const markup = renderToStaticMarkup(<MemoryRouter><ProjectOverviewPage /></MemoryRouter>);
 
     expect(markup).toContain("Prosjektdetaljer");
     expect(markup).toContain("Prosjekt");

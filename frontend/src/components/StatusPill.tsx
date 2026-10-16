@@ -25,6 +25,9 @@ function humanizeStatus(status: string): string {
     return projectStatusMeta(status).label;
   }
   const lowered = status.toLowerCase();
+  if (lowered === "partial") return "Delvis gjennomgått";
+  if (lowered === "stale") return "Utdatert snapshot";
+  if (lowered === "cancelled") return "Stoppet";
   if (lowered === "online") {
     return "Online";
   }
@@ -66,6 +69,7 @@ function toneForStatus(status: string): StatusBadgeProps["tone"] {
     return projectStatusMeta(status).tone;
   }
   const lowered = status.toLowerCase();
+  if (["partial", "stale", "cancelled"].includes(lowered)) return "warning";
   if (lowered.includes("warning")) {
     return "warning";
   }
@@ -85,5 +89,5 @@ function toneForStatus(status: string): StatusBadgeProps["tone"] {
 }
 
 function isProjectStatusLevel(status: string): status is ProjectStatusLevel {
-  return ["PENDING", "RUNNING", "SUCCESS", "SUCCESS_WITH_WARNINGS", "FAILED", "NO_REPORT"].includes(status);
+  return ["PENDING", "RUNNING", "SUCCESS", "SUCCESS_WITH_WARNINGS", "FAILED", "NO_REPORT", "PARTIAL", "STALE", "CANCELLED"].includes(status);
 }

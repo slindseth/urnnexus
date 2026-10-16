@@ -239,18 +239,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [startupError, setStartupError] = useState<string | null>(null);
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [startupRetryIndex, setStartupRetryIndex] = useState(0);
-  const startupBootstrappedRef = useRef(false);
   const startupSnapshotRef = useRef<ApplianceStatusSnapshot | null>(null);
-  const dailySyncBootstrappedRef = useRef(false);
   const dailySyncDismissedRef = useRef(false);
   const retryDailySyncRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    if (startupBootstrappedRef.current) {
-      return;
-    }
-    startupBootstrappedRef.current = true;
-
+    // Effect cleanup cancels this attempt. Allow a fresh setup for StrictMode
+    // replay and explicit retries instead of keeping a one-time ref guard.
     let cancelled = false;
     let settled = false;
     const timers: number[] = [];
@@ -280,7 +275,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       });
 
       const timeoutPromise = new Promise<"timeout">((resolve) => {
-        window.setTimeout(() => resolve("timeout"), STARTUP_REQUEST_TIMEOUT_MS);
+        timers.push(window.setTimeout(() => resolve("timeout"), STARTUP_REQUEST_TIMEOUT_MS));
       });
       const result = await Promise.race([
         Promise.allSettled([getSystemReadiness(), readApplianceStatus()]),
@@ -426,10 +421,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     if (startupState !== "ready") {
       return undefined;
     }
-    if (dailySyncBootstrappedRef.current) {
-      return;
-    }
-    dailySyncBootstrappedRef.current = true;
+    // Resume polling after a fresh startup setup or development refresh.
 
     let cancelled = false;
     let pollTimerId: number | undefined;
@@ -935,7 +927,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
     const initialSnapshot = startupSnapshotRef.current;
     startupSnapshotRef.current = null;
-    void bootstrapDailySync(initialSnapshot);
+    if (import.meta.env.VITE_NEXUS_AUTO_SYNC !== "false") void bootstrapDailySync(initialSnapshot);
     return () => {
       cancelled = true;
       clearTimers();
@@ -959,7 +951,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   };
 
   const retryStartup = () => {
-    startupBootstrappedRef.current = false;
     startupSnapshotRef.current = null;
     setDailySync(null);
     setStartupError(null);

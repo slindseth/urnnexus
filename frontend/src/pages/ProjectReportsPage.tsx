@@ -3,6 +3,7 @@ import { ReportTable } from "../components/ReportTable";
 import { formatBytes, formatDateTime, getProjectReports } from "../lib/api";
 import { useResource } from "../lib/useResource";
 import { useProjectPageContext } from "./ProjectPage";
+import { MemoryProjectPanel } from "../components/MemoryProjectPanel";
 
 export function ProjectReportsPage() {
   const { project } = useProjectPageContext();
@@ -48,11 +49,12 @@ export function ProjectReportsPage() {
 
   return (
     <div className="section-stack">
+      <MemoryProjectPanel key={project.projectName} projectName={project.projectName} variant="reports" />
       <section className="surface surface--padded">
         <div className="section-head">
           <div>
             <div className="section-kicker"> </div>
-            <h2 className="section-title">Rapporthistorikk</h2>
+            <h2 className="section-title">Andre rapportfiler og eldre rapporter</h2>
           </div>
           <div className="section-head__note">
             {project.reportCountLabel} · {formatBytes(totalSize)}
@@ -70,6 +72,7 @@ export function ProjectReportsPage() {
           </div>
         </div>
 
+        <p>Filer fra Kommentarer og tidligere rapportløp. Denne listen er ikke dokumentasjon på kildeverifisering. Bruk jobb- og snapshotreferansene over for prosjektmotorens rapporter.</p>
         <ReportTable reports={reports.reports} />
       </section>
     </div>

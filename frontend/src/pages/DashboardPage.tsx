@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { IconRefresh, IconChevronDown, IconArrowUpRight, IconDots } from "@tabler/icons-react";
 import { Link } from "react-router-dom";
 import { AppHeader } from "../components/Layout";
 import { ErrorState } from "../components/ErrorState";
@@ -201,52 +202,43 @@ export function DashboardPage() {
   }
 
   return (
-    <div className="page-stack">
+    <div className="page-stack dashboard-page">
       <AppHeader
         title="Kontrollsenter"
-        description=" "
+        description="Prosjekter, rapporter og drift — samlet på ett sted."
         eyebrow={null}
       />
 
-      <section className="surface surface--padded">
-        <div className="dashboard-topline">
-          <div className="dashboard-statusline__item">
-            <span className="dashboard-statusline__label">Appliance</span>
-            <StatusPill status={applianceStatus} label={applianceLabel} />
+      <section className="dashboard-connection" aria-label="Driftsstatus">
+        <div className="dashboard-connection__main">
+          <div className="dashboard-connection__service">
+            <StatusPill status={applianceStatus} label={`Appliance ${applianceLabel.toLowerCase()}`} />
+            <span className="dashboard-connection__caption">{applianceBusy ? "En jobb pågår" : "Klar for arbeid"}</span>
           </div>
-          <div className="dashboard-statusline__item">
-            <span className="dashboard-statusline__label">Sist synk fullført</span>
-            <strong>{dashboardLastSyncedAt ? formatDateTime(dashboardLastSyncedAt) : "Ukjent"}</strong>
+          <div className="dashboard-connection__sync">
+            <StatusPill status={syncPillStatus} label={syncPillLabel === "Klar" ? "OneDrive klar" : syncPillLabel} />
+            <span className="dashboard-connection__caption">Sist synk fullført: {dashboardLastSyncedAt ? formatDateTime(dashboardLastSyncedAt) : "Ukjent"}</span>
           </div>
-          <div className="dashboard-statusline__item">
-            <span className="dashboard-statusline__label">Siste analyse</span>
-            <strong>{metrics.lastAnalyzedAt ? formatDateTime(metrics.lastAnalyzedAt) : "Ingen analyse"}</strong>
-          </div>
-          <div className="dashboard-statusline__item">
-            <span className="dashboard-statusline__label">Siste rapport</span>
-            <strong>{metrics.latestReportAt ? formatDateTime(metrics.latestReportAt) : "Ingen rapport"}</strong>
-          </div>
-          <div className="dashboard-statusline__item">
-            <span className="dashboard-statusline__label">Sync</span>
-            <StatusPill status={syncPillStatus} label={syncPillLabel} />
-          </div>
-          <div className="dashboard-actions">
-            <div className="dashboard-actions__stack">
-              <button
-                type="button"
-                className={`button${applianceBusy ? " button--muted" : ""}`}
-                onClick={() => void handleRunSync()}
-                disabled={syncButtonDisabled}
-                title={syncButtonTitle}
-                aria-label={`Synk OneDrive. ${syncButtonTitle}`}
-              >
-                Synk OneDrive
-              </button>
-              {busyActionNote ? <div className="dashboard-actions__note dashboard-actions__note--warning">{busyActionNote}</div> : null}
-            </div>
+          <div className="dashboard-actions__stack">
+            <button
+              type="button"
+              className={`button${applianceBusy ? " button--muted" : ""}`}
+              onClick={() => void handleRunSync()}
+              disabled={syncButtonDisabled}
+              title={syncButtonTitle}
+              aria-label={`Synk OneDrive. ${syncButtonTitle}`}
+            >
+              <IconRefresh size={18} stroke={1.7} aria-hidden="true" />
+              Synk OneDrive
+            </button>
+            {busyActionNote ? <div className="dashboard-actions__note dashboard-actions__note--warning">{busyActionNote}</div> : null}
           </div>
         </div>
+        <details className="dashboard-sync-disclosure">
+          <summary>Synkroniseringsdetaljer <IconChevronDown size={14} stroke={1.7} aria-hidden="true" /></summary>
         <div className="dashboard-sync-details">
+          <span>Siste analyse: {metrics.lastAnalyzedAt ? formatDateTime(metrics.lastAnalyzedAt) : "Ingen analyse"}</span>
+          <span>Siste rapport: {metrics.latestReportAt ? formatDateTime(metrics.latestReportAt) : "Ingen rapport"}</span>
           <span>Siste sync-start: {syncStatus?.last_started_at ? formatDateTime(syncStatus.last_started_at) : "Ikke kjørt fra portal"}</span>
           <span>Siste sync-ferdig: {syncStatus?.last_completed_at ? formatDateTime(syncStatus.last_completed_at) : "—"}</span>
           {syncStatus?.current_phase ? <span>Fase: {syncStatus.current_phase}</span> : null}
@@ -280,6 +272,7 @@ export function DashboardPage() {
             </div>
           </details>
         ) : null}
+        </details>
         {healthError ? <div className="inline-note inline-note--error">{healthError}</div> : null}
         {syncError ? <div className="inline-note inline-note--error">{syncError}</div> : null}
         {syncLastErrorMessage ? (
@@ -288,63 +281,65 @@ export function DashboardPage() {
         {syncMessage ? <div className="inline-note">{syncMessage}</div> : null}
       </section>
 
-      <section className="dashboard-metrics" aria-label="Dashboardnøkkeltall">
-        <MetricCard label="Prosjekter totalt" value={metrics.totalProjects.toLocaleString("nb-NO")} />
-        <MetricCard label="Med varsler" value={metrics.projectsWithWarnings.toLocaleString("nb-NO")} tone={metrics.projectsWithWarnings > 0 ? "warning" : "neutral"} />
-        <MetricCard label="Uten rapport" value={metrics.projectsWithoutReport.toLocaleString("nb-NO")} tone={metrics.projectsWithoutReport > 0 ? "warning" : "neutral"} />
-        <MetricCard label="Analysert siste 24t" value={metrics.analyzedLast24Hours.toLocaleString("nb-NO")} />
-        <MetricCard label="Totalt antall filer" value={metrics.totalFiles.toLocaleString("nb-NO")} />
-        <MetricCard label="Rapporter" value={metrics.totalReports.toLocaleString("nb-NO")} />
+      <section className="dashboard-overview" aria-label="Dashboardnøkkeltall">
+        <div className="dashboard-metrics">
+          <MetricCard label="Prosjekter totalt" value={metrics.totalProjects.toLocaleString("nb-NO")} />
+          <MetricCard label="Filer" value={metrics.totalFiles.toLocaleString("nb-NO")} />
+          <MetricCard label="Rapporter" value={metrics.totalReports.toLocaleString("nb-NO")} />
+        </div>
+        <div className="dashboard-overview__notes">
+          <span className={metrics.projectsWithoutReport > 0 ? "dashboard-overview__warning" : ""}>Uten rapport: <strong>{metrics.projectsWithoutReport.toLocaleString("nb-NO")}</strong></span>
+          <span>Med varsler: <strong>{metrics.projectsWithWarnings.toLocaleString("nb-NO")}</strong></span>
+          <span>Analysert siste 24t: <strong>{metrics.analyzedLast24Hours.toLocaleString("nb-NO")}</strong></span>
+        </div>
       </section>
 
-      <section className="surface surface--padded">
+      <section className="dashboard-reports">
         <div className="section-head">
           <div>
-            <div className="section-kicker"> </div>
             <h2 className="section-title">Seneste rapporter</h2>
           </div>
-          <div className="section-head__note">{projectsLoading ? "Laster …" : `${recentReports.length.toLocaleString("nb-NO")} nyeste`}</div>
+          <Link className="text-link" to="/projects">Se alle prosjekter <IconArrowUpRight size={16} stroke={1.7} aria-hidden="true" /></Link>
         </div>
 
         {isInitialProjectsLoad ? (
           <div className="loading-copy">Laster prosjekter …</div>
         ) : recentReports.length > 0 ? (
-          <div className="report-feed">
-            {recentReports.map((project) => (
-              <article className="report-feed__item" key={project.projectName}>
-                <div className="report-feed__main">
-                  <div className="report-feed__title">{project.latestReport?.name}</div>
-                  <div className="report-feed__meta">
-                    <span>{project.displayName}</span>
-                    <span>{project.latestReport?.createdAt ? formatDateTime(project.latestReport.createdAt) : "Tidspunkt ukjent"}</span>
-                    <StatusPill status={project.status.level} />
-                  </div>
-                </div>
-                <div className="report-feed__actions">
-                  {project.latestReport?.openUrl ? (
-                    <>
-                      <a className="button" href={project.latestReport.openUrl} target="_blank" rel="noreferrer">
-                        Åpne rapport
-                      </a>
-                      <a className="button button--subtle" href={project.latestReport.openUrl} target="_blank" rel="noreferrer">
-                        Åpne kommentardokument
-                      </a>
-                      <CopyLinkButton href={project.latestReport.openUrl} />
-                    </>
-                  ) : null}
-                  <Link className="button button--secondary" to={project.projectHref}>
-                    Åpne prosjekt
-                  </Link>
-                </div>
-              </article>
-            ))}
+          <div className="dashboard-reports__table-wrap">
+            <table className="dashboard-reports__table" aria-label="Seneste rapporter">
+              <thead><tr><th>Prosjekt</th><th>Dokument</th><th>Dato</th><th>Status</th><th>Handlinger</th></tr></thead>
+              <tbody>
+                {recentReports.map((project) => (
+                  <tr key={project.projectName}>
+                    <td><Link className="dashboard-reports__project" to={project.projectHref}>{project.displayName}</Link><span className="dashboard-reports__subline">{project.fileCountLabel}</span></td>
+                    <td><span className="dashboard-reports__document" title={project.latestReport?.name}>{displayReportName(project)}</span><span className="dashboard-reports__subline">Kommentardokument</span></td>
+                    <td className="dashboard-reports__date">{project.latestReport?.createdAt ? formatDateTime(project.latestReport.createdAt) : "Tidspunkt ukjent"}</td>
+                    <td><StatusPill status={project.status.level} /></td>
+                    <td>
+                      <div className="dashboard-reports__actions">
+                        {project.latestReport?.openUrl ? <a className="button button--subtle" aria-label={`Åpne kommentardokument for ${project.displayName}`} href={project.latestReport.openUrl} target="_blank" rel="noreferrer">Åpne rapport <IconArrowUpRight size={16} stroke={1.7} aria-hidden="true" /></a> : null}
+                        <Link className="text-link dashboard-reports__project-action" to={project.projectHref}>Åpne prosjekt</Link>
+                        {project.latestReport?.openUrl ? <details className="row-menu"><summary aria-label={`Flere valg for ${project.displayName}`}><IconDots size={18} aria-hidden="true" /></summary><div className="row-menu__panel"><CopyLinkButton href={project.latestReport.openUrl} /></div></details> : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : (
           <EmptyState title="Ingen rapporter" description="Dashboardet har ingen rapporter å vise akkurat nå." />
         )}
       </section>
+      <footer className="workspace-footer"><span>Urban Reuse Norway</span><Link className="text-link" to="/activity">Se aktivitet <IconArrowUpRight size={14} stroke={1.7} aria-hidden="true" /></Link></footer>
     </div>
   );
+}
+
+function displayReportName(project: ProjectViewModel): string {
+  const name = project.latestReport?.name ?? "Rapport";
+  const prefix = `${project.projectName} - `;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
 function MetricCard({

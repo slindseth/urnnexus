@@ -8,8 +8,11 @@ Frontend er bevisst holdt enkel og OneDrive-lignende:
 - liste/tabellvisning for prosjekter
 - filtre for filtyper og filstruktur
 - rapporter fra `Kommentarer`-mappen
-- ingen analyseknapp og ingen IFC-viewer ennå
-- data leses fra lokal appliance-cache, ikke direkte fra OneDrive
+- prosjektgjennomgang med varige jobber, funn, kilder og Word-rapporter
+- ingen IFC-viewer ennå
+- data leses fra lokal appliance-cache og prosjektminne
+
+Oppdatert prosjektminne, analysevalg, konfigurasjon og eksakte oppstartskommandoer: [Prosjektminne i Nexus](docs/project-memory-integration.md).
 
 ## Arkitektur
 

@@ -90,7 +90,8 @@ describe("HealthPage", () => {
     expect(markup).toContain("Viser om Nexus-backend svarer på API-kall.");
     expect(markup).toContain("Antall prosjekter som faktisk er synlige i denne visningen akkurat nå.");
     expect(markup).toContain("Totalt antall prosjekter backend har funnet i datagrunnlaget.");
-    expect(markup).toContain("Viser om Nexus kan opprette, slette og laste opp direkte til OneDrive.");
+    expect(markup).toContain("Innlogging, tillatelser og ekstern opplasting er ikke dermed verifisert.");
+    expect(markup.match(/Ikke verifisert/g)).toHaveLength(3);
     expect(markup).toContain('role="tooltip"');
     expect(markup).toContain('tabindex="0"');
     expect(markup).toContain("status-badge__label");

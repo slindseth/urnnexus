@@ -3,7 +3,7 @@ import type { ProjectSummary } from "../types";
 
 export const showSampleProjectsInUi = import.meta.env.VITE_SHOW_SAMPLE_PROJECTS === "true";
 
-export type ProjectStatusLevel = "PENDING" | "RUNNING" | "SUCCESS" | "SUCCESS_WITH_WARNINGS" | "FAILED" | "NO_REPORT";
+export type ProjectStatusLevel = "PENDING" | "RUNNING" | "SUCCESS" | "SUCCESS_WITH_WARNINGS" | "FAILED" | "NO_REPORT" | "PARTIAL" | "STALE" | "CANCELLED";
 
 export type StatusTone = "neutral" | "success" | "warning" | "danger" | "info";
 
@@ -58,6 +58,9 @@ export interface ProjectViewModel {
 }
 
 const STATUS_META: Record<ProjectStatusLevel, ProjectStatusMeta> = {
+  PARTIAL: { level: "PARTIAL", label: "Delvis gjennomgått", tone: "warning", description: "Gjennomgangen har gjenstående kontroll eller begrensninger." },
+  STALE: { level: "STALE", label: "Utdatert snapshot", tone: "warning", description: "Resultatet gjelder et tidligere kildegrunnlag." },
+  CANCELLED: { level: "CANCELLED", label: "Stoppet", tone: "warning", description: "Gjennomgangen er stoppet. Lagret arbeid er beholdt." },
   PENDING: {
     level: "PENDING",
     label: "Venter",
@@ -143,6 +146,9 @@ function rawStatus(value: string | null | undefined): string {
 function statusLevelForProject(project: ProjectSummary, issues: ProjectIssue[]): ProjectStatusLevel {
   const status = rawStatus(project.status);
   const reportCount = Math.max(project.report_count, project.comment_document_count);
+  if (status === "partial") return "PARTIAL";
+  if (status === "stale") return "STALE";
+  if (status === "cancelled") return "CANCELLED";
 
   if (["failed", "failure", "error", "errored"].includes(status)) {
     return "FAILED";

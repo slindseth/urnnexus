@@ -8,6 +8,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from backend.app.api.routes import router
+from backend.app.api.memory import router as memory_router
+from backend.app.services.project_memory import MemoryError
 from backend.app.config import ApplianceSettings
 from backend.app.models.common import ApiError
 from backend.app.version import APP_VERSION
@@ -44,6 +46,10 @@ def create_app(settings: ApplianceSettings | None = None, *, onedrive_writer: On
     app = FastAPI(title="URN Nexus Web", version=APP_VERSION)
     resolved_settings = settings or ApplianceSettings()
     app.state.appliance_service = ApplianceService(resolved_settings, onedrive_writer=onedrive_writer)
+
+    @app.exception_handler(MemoryError)
+    async def memory_error_handler(_: Request, exc: MemoryError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"code": exc.code, "detail": exc.detail})
 
     @app.get("/")
     def root() -> dict[str, Any]:
@@ -107,6 +113,7 @@ def create_app(settings: ApplianceSettings | None = None, *, onedrive_writer: On
         return JSONResponse(status_code=500, content=ApiError(code="internal_error", detail="Internal server error").model_dump(mode="json"))
 
     app.include_router(router)
+    app.include_router(memory_router)
     return app
 
 

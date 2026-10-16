@@ -119,6 +119,7 @@ export function getUserFacingErrorMessage(error: unknown, fallback = "Status kun
     ? error.rawMessage
     : candidate?.rawMessage ?? (error instanceof Error ? error.message : "");
   const raw = rawSource.toLowerCase();
+  if (code.startsWith("memory_")) return rawSource || fallback;
 
   if (code === "appliance_busy" || raw === "appliance arbeider. synk kan startes når aktiv jobb er ferdig.") {
     return "Appliance arbeider. Synk kan startes når aktiv jobb er ferdig.";
@@ -148,7 +149,7 @@ export function isRetryableStartupError(error: unknown): boolean {
   return !["graph_auth_failed", "graph_permission_denied", "auth_failed", "sync_failed", "backend_configuration_error", "appliance_unreachable", "appliance_unavailable"].includes(error.code ?? "");
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
+export async function fetchJson<T>(path: string): Promise<T> {
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -185,7 +186,7 @@ async function fetchJson<T>(path: string): Promise<T> {
   }
 }
 
-async function sendJson<T>(path: string, payload?: unknown): Promise<T> {
+export async function sendJson<T>(path: string, payload?: unknown): Promise<T> {
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -194,6 +195,7 @@ async function sendJson<T>(path: string, payload?: unknown): Promise<T> {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        "X-Nexus-Action": "project-memory",
       },
       body: payload === undefined ? undefined : JSON.stringify(payload),
       signal: controller.signal,

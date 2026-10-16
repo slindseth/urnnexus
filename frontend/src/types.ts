@@ -148,6 +148,9 @@ export interface HealthResponse {
   openai_detail: string | null;
   smtp_status: string;
   smtp_detail: string | null;
+  microsoft_auth_verified?: boolean | null;
+  external_upload_verified?: boolean | null;
+  smtp_delivery_verified?: boolean | null;
   disk_total_bytes: number | null;
   disk_used_bytes: number | null;
   disk_free_bytes: number | null;
@@ -447,28 +450,11 @@ export interface AnalysisRunRequest {
   email_mode: "daily_digest" | "immediate";
 }
 
+/** Legacy start route acknowledges a launch; appliance jobs supply the durable ID. */
 export interface AnalysisRunResponse {
-  job_id: string;
-  running: boolean;
-  started_at: string;
-  status: string;
-  analysis_started: boolean;
-  reports_generated: number;
-  projects_synced: number;
-  files_changed: number;
-  reports_found: number;
-  email_mode: "daily_digest" | "immediate";
-  project_name: string | null;
-  job_type?: "analysis";
-  requested_by?: string;
-  requested_at?: string | null;
-  current_phase?: string | null;
-  current_project?: string | null;
-  progress?: number | null;
-  process_id?: number | null;
-  appliance_run_id?: string | null;
-  run_mode?: ActivityRunMode;
-  event_code?: string | null;
+  accepted: boolean;
+  job_id: string | null;
+  launch_pending: boolean;
 }
 
 export interface AnalysisStatusResponse {

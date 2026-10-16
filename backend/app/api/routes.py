@@ -6,14 +6,13 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from backend.app.models.health import HealthResponse, ReadinessResponse
 from backend.app.models.activity import ActivityEventsResponse, ActivityLogsResponse, ActivityStatusResponse
 from backend.app.models.operations import (
     AnalysisRunRequest,
-    AnalysisRunResponse,
     AnalysisStatusResponse,
     FileUploadResponse,
     FolderCreateRequest,
@@ -378,10 +377,16 @@ def sync_status(service: ApplianceService = Depends(get_service)) -> SyncStatusR
     return service.sync_status()
 
 
-@router.post("/analysis/start", response_model=AnalysisRunResponse)
-@router.post("/analysis/run", response_model=AnalysisRunResponse)
-def run_analysis(payload: AnalysisRunRequest, service: ApplianceService = Depends(get_service)) -> AnalysisRunResponse:
-    return service.start_analysis(payload.project_name, email_mode=payload.email_mode)
+@router.post("/analysis/start", status_code=202)
+@router.post("/analysis/run", status_code=202)
+def run_analysis(payload: AnalysisRunRequest, request: Request, service: ApplianceService = Depends(get_service)):
+    from backend.app.services.project_memory import MemoryAction
+
+    if request.headers.get("x-nexus-action") != "project-memory":
+        raise HTTPException(403, "Analyse må startes eksplisitt fra prosjektets gjennomgang.")
+    if not payload.project_name:
+        raise HTTPException(400, "Velg ett prosjekt. Nexus starter ikke en arkivgjennomgang.")
+    return service.memory.start(payload.project_name, MemoryAction())
 
 
 @router.get("/analysis/status", response_model=AnalysisStatusResponse)
