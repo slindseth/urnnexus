@@ -3257,3 +3257,9 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px soli
   .memory-panel .button { white-space: normal; text-align: center; }
   .memory-finding, .memory-evidence { padding: .65rem; }
 }
+
+.activity-evidence { overflow-wrap: anywhere; white-space: normal; font-size: .8rem; }
+.activity-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.activity-feed__time, .activity-error-list__time, .activity-log-row__time { white-space: normal; min-width: 0; }
+.activity-log-row { grid-template-columns: minmax(10rem, 12rem) auto auto minmax(0, 1fr) auto; }
+@media (max-width: 700px) { .activity-log-row { display: flex; flex-wrap: wrap; } }

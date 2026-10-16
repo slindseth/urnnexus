@@ -165,6 +165,7 @@ function makeCompletedSyncStatus(): SyncStatusResponse {
     files_changed: 4,
     reports_found: 1,
     status: "completed",
+    sync_status: "complete",
   };
 }
 
@@ -718,5 +719,40 @@ describe("AppDataProvider daily sync", () => {
     expect(container.textContent).toContain("NEXUS kunne ikke starte");
     expect(container.textContent).toContain("OneDrive krever ny innlogging.");
     expect(runSyncSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("authoritative sync completeness", () => {
+  it("accepts a reachable backend with explicit unknown completeness", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_NEXUS_AUTO_SYNC", "false");
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    vi.spyOn(api, "getSyncStatus").mockResolvedValue({ ...makeIdleSyncStatus(), status: "unknown", sync_status: "unknown" });
+    const run = vi.spyOn(api, "runSync");
+    const { container } = renderApp();
+    await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); });
+    expect(container.textContent).not.toContain("Starter NEXUS");
+    expect(container.textContent).not.toContain("NEXUS kunne ikke starte");
+    expect(run).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
+  it("does not store an incomplete terminal result as a completed daily sync", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T08:30:00+02:00"));
+    vi.spyOn(api, "getProjects").mockResolvedValue(makeProjectsResponse());
+    vi.spyOn(api, "getHealth").mockResolvedValue(health);
+    vi.spyOn(api, "getSyncStatus")
+      .mockResolvedValueOnce(makeIdleSyncStatus())
+      .mockResolvedValue({ ...makeCompletedSyncStatus(), status: "incomplete", sync_status: "incomplete", enumeration_complete: false });
+    vi.spyOn(api, "runSync").mockResolvedValue(makeSyncRunResponse());
+    renderApp();
+    await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(3000); for (let i = 0; i < 10; i++) await Promise.resolve(); });
+    for (let i = 0; i < localStorage.length; i++) {
+      const value = localStorage.getItem(localStorage.key(i)!);
+      if (value?.startsWith("{")) expect(JSON.parse(value).status).not.toBe("completed");
+    }
   });
 });

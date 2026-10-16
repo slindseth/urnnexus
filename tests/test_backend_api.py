@@ -1690,6 +1690,8 @@ def test_sync_endpoint_starts_sync_only_nonblocking_job(monkeypatch: pytest.Monk
                         "per_root_results": [
                             {
                                 "status": "completed",
+                                "sync_status": "complete",
+                                "enumeration_complete": True,
                                 "root_name": "Bryn Skole",
                                 "project_name": "Bryn Skole",
                                 "run_id": "appliance-run-1",
@@ -1914,7 +1916,7 @@ def test_sync_status_clears_stale_lock_error_when_process_is_not_running(tmp_pat
     assert payload["activity"] == "idle"
 
 
-def test_sync_status_removes_stale_history_lock_file(tmp_path: Path) -> None:
+def test_sync_status_preserves_and_ignores_stale_history_lock_file(tmp_path: Path) -> None:
     appliance_root = tmp_path / "appliance"
     runtime_root = appliance_root / ".riveanbud_runtime"
     runtime_root.mkdir(parents=True, exist_ok=True)
@@ -1955,7 +1957,7 @@ def test_sync_status_removes_stale_history_lock_file(tmp_path: Path) -> None:
     assert payload["lock_stale"] is True
     assert payload["lock_exists"] is False
     assert payload["activity"] == "idle"
-    assert not lock_path.exists()
+    assert lock_path.exists()
 
 
 def test_sync_endpoint_fails_safely_when_sync_only_is_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2332,9 +2334,9 @@ def test_activity_endpoints_report_failed_state_and_meaningful_errors(tmp_path: 
     assert status_response.status_code == 200
     status = status_response.json()
     assert status["state"] == "Feilet"
-    assert status["activity"] == "OpenAI"
+    assert status["activity"] == "Ingen aktiv jobb"
     assert status["status"] == "Request timed out"
-    assert status["project_name"] == "Bryn Skole"
+    assert status["project_name"] is None  # completed jobs belong to history
 
     assert events_response.status_code == 200
     events = events_response.json()

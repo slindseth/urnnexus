@@ -38,6 +38,7 @@ def seed_workspace(base: Path, cli_root: Path = CLI_ROOT):
         "Bygg A: Avfall skal fjernes. Deponikostnader må avklares.\n"
     )
     (root / "skann.pdf").write_bytes(b"Unreadable synthetic PDF")
+    (root / "modell.smc").write_bytes(b"Synthetic unsupported SMC")
     state = base / "state"
     environment = dict(
         APPLIANCE_MEMORY_EMBEDDING_MODE="disabled", APPLIANCE_MEMORY_MAX_REQUESTS="20"
@@ -519,3 +520,47 @@ def test_real_cooperative_cancel_and_negative_scope(workspace):
         )
     assert w["client"].get(path(w, job="job:foreign")).status_code == 404
     assert w["client"].get(path(w, "/evidence/evidence:foreign")).status_code == 404
+
+
+def test_activity_uses_native_events_and_persisted_active_job(workspace):
+    import fcntl
+    w = workspace
+    binding = w['gateway'].binding('Prosjekt Æ')
+    lock = w['gateway'].lock_path(binding)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    job_id = w['status']['job_id']
+    with sqlite3.connect(w['state'] / 'memory.sqlite3') as db:
+        db.execute("UPDATE jobs SET status='running',stage='ocr' WHERE id=?", (job_id,))
+    with lock.open('a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for client in [w['client'], TestClient(create_app(w['settings']))]:
+            status = client.get('/api/activity/status').json()
+            assert status['job_id'] == job_id
+            assert status['project_name'] == 'Prosjekt Æ'
+            assert status['current_phase'] == 'ocr'
+            assert status['state'] == 'Analyserer'
+    restarted = TestClient(create_app(w['settings']))
+    assert restarted.get('/api/activity/status').json()['job_id'] is None
+    events = restarted.get('/api/activity/logs').json()['entries']
+    native = [r for r in events if r['source'] == 'project_memory']
+    assert native and all(r['job_id'] == job_id for r in native)
+    assert all('native_event' in r['raw'] and r['event_id'].startswith('memory:') for r in native)
+    assert all(r['origin'] == 'unknown' for r in native)  # native schema has no environment
+    assert not any(r['message'] == 'Running OCR' for r in native)
+
+
+def test_coverage_retains_unreadable_manifest_and_unsupported_smc(workspace):
+    w = workspace
+    status = w['status']
+    with sqlite3.connect(w['state'] / 'memory.sqlite3') as db:
+        row = db.execute('SELECT manifest FROM snapshots WHERE id=?',(status['snapshot_id'],)).fetchone()
+        manifest = json.loads(row[0])
+        manifest.append(dict(path='unreadable.bin',version=None,disposition='manual_review',reason='unreadable_source'))
+        db.execute('UPDATE snapshots SET manifest=? WHERE id=?',(json.dumps(manifest),status['snapshot_id']))
+    response = w['client'].get(path(w)).json()
+    assert response['coverage_unreadable'][0]['path'] == 'unreadable.bin'
+    manual = w['client'].get(path(w, '/manual-review')).json()['units']
+    assert any(unit['path'].endswith('.smc') and unit['state'] in {'unsupported', 'manual_review'} for unit in manual)
+    assert response['job']['status']=='partial'
+    reports = w['client'].get(path(w, '/reports')).json()['reports']
+    assert reports and w['client'].get(reports[0]['download_url']).status_code == 200

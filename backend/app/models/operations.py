@@ -112,7 +112,13 @@ class FolderCreateResponse(ApiModel):
     warning: str | None = None
 
 
-class SyncRunResponse(ApiModel):
+class SyncResultEvidence(ApiModel):
+    sync_status: Literal["complete", "incomplete", "failed", "unknown"] = "unknown"
+    enumeration_complete: bool | None = None
+    project_results: list[dict] = Field(default_factory=list)
+
+
+class SyncRunResponse(SyncResultEvidence):
     job_id: str
     running: bool
     started_at: datetime
@@ -142,7 +148,7 @@ class SyncRunResponse(ApiModel):
     performance: SyncPerformance | None = None
 
 
-class SyncStatusResponse(ApiModel):
+class SyncStatusResponse(SyncResultEvidence):
     running: bool
     process_alive: bool = False
     lock_exists: bool = False

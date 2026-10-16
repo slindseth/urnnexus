@@ -94,7 +94,7 @@ function resolveLiveApplianceActivity(syncStatus: SyncStatusResponse, analysisSt
 function isValidStatusSnapshot(snapshot: ApplianceStatusSnapshot): boolean {
   const syncStatus = snapshot.syncStatus?.status?.trim().toLowerCase();
   const analysisStatus = snapshot.analysisStatus?.status?.trim().toLowerCase();
-  const validSyncStatuses = new Set(["idle", "running", "completed", "completed_with_warnings", "skipped_no_changes", "failed", "error", "success"]);
+  const validSyncStatuses = new Set(["idle", "startup_pending", "running", "completed", "completed_with_warnings", "skipped_no_changes", "failed", "error", "success", "incomplete", "unknown"]);
   const validAnalysisStatuses = new Set(["idle", "startup_pending", "running", "completed", "failed", "auth_failed", "sync_failed"]);
   const unclassifiedSyncFailure = ["failed", "error"].includes(syncStatus ?? "") && !snapshot.syncStatus?.error_code;
   const unclassifiedAnalysisFailure = ["failed", "auth_failed", "sync_failed"].includes(analysisStatus ?? "") && !snapshot.analysisStatus?.error_code;
@@ -105,7 +105,7 @@ function isValidStatusSnapshot(snapshot: ApplianceStatusSnapshot): boolean {
       typeof snapshot.analysisStatus.status === "string" &&
       syncStatus &&
       analysisStatus &&
-      syncStatus !== "unknown" &&
+      (syncStatus !== "unknown" || snapshot.syncStatus.sync_status === "unknown") &&
       analysisStatus !== "unknown" &&
       validSyncStatuses.has(syncStatus) &&
       validAnalysisStatuses.has(analysisStatus) &&
@@ -631,7 +631,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        if (normalizedStatus.includes("complete") || normalizedStatus.includes("skipped") || Boolean(syncStatus.last_completed_at)) {
+        if (syncStatus.sync_status === "complete") {
           persistRecord({
             date: currentRecord?.date ?? getLocalDayKey(),
             started_at: startedAt,
@@ -832,7 +832,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
         const normalizedStatus = syncStatus.status.trim().toLowerCase();
         const backendVisibleError = backendLockError ? null : syncStatus.last_error;
-        const backendCompletedToday = Boolean(syncStatus.last_completed_at && isSameLocalDayAsToday(syncStatus.last_completed_at));
+        const backendCompletedToday = syncStatus.sync_status === "complete" && Boolean(syncStatus.last_completed_at && isSameLocalDayAsToday(syncStatus.last_completed_at));
         const backendStartedToday = Boolean(syncStatus.last_started_at && isSameLocalDayAsToday(syncStatus.last_started_at));
         const explicitFailureCode = syncStatus.error_code ?? analysisStatus.error_code ?? null;
         const backendFailed = !backendLockError && isExplicitSyncFailureCode(explicitFailureCode);

@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, 
 import { AppHeader } from "../components/Layout";
 import { EmptyState } from "../components/EmptyState";
 import { StatusPill } from "../components/StatusPill";
-import { formatDateTime, formatTimeOfDay } from "../lib/api";
+import { Link } from "react-router-dom";
+import { activityKey, formatActivityTimestamp, matchesOrigin, sortActivityEntries, type ActivityOriginFilter } from "../lib/activity";
+import { projectUrl } from "../lib/api";
 import { useActivityData } from "../lib/useActivityData";
 import type { ActivityError, ActivityEvent, ActivityLevel, ActivityLogEntry, ActivityState, ActivityStatusResponse, SyncStatusResponse } from "../types";
 
@@ -19,6 +21,8 @@ const STATUS_TONES: Record<ActivityState, "success" | "info" | "warning" | "dang
   "Synkronisering fullført": "success",
   "Synkronisering fullført uten endringer": "success",
   "Synkronisering feilet": "danger",
+  "Synkronisering ufullstendig": "warning",
+  "Sync-fullføring ukjent": "warning",
   Synkroniserer: "info",
   Analyserer: "info",
   "Genererer rapport": "warning",
@@ -39,30 +43,30 @@ export function ActivityPage() {
   const { status, statusLoading, statusError, syncStatus, events, eventsLoading, eventsError, logs, logsLoading, logsError } = useActivityData();
   const [searchTerm, setSearchTerm] = useState("");
   const [pinLogsToTop, setPinLogsToTop] = useState(true);
-  const [clearedAfterMs, setClearedAfterMs] = useState(0);
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set());
+  const [origin, setOrigin] = useState<ActivityOriginFilter>("operational");
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const logViewportRef = useRef<HTMLDivElement | null>(null);
 
-  const visibleEvents = sortActivityEntries(events?.events ?? []);
-  const visibleErrors = sortActivityEntries(events?.errors ?? []);
+  const visibleEvents = sortActivityEntries((events?.events ?? []).filter((entry) => matchesOrigin(entry, origin)));
+  const visibleErrors = sortActivityEntries((events?.errors ?? []).filter((entry) => matchesOrigin(entry, origin)));
   const visibleLogs = useMemo(() => {
     const normalizedSearchTerm = searchTerm.trim().toLowerCase();
     const filteredLogs = (logs?.entries ?? []).filter((entry) => {
-      const timestampMs = Date.parse(entry.timestamp);
-      if (Number.isFinite(timestampMs) && timestampMs <= clearedAfterMs) {
+      if (hiddenIds.has(activityKey(entry)) || !matchesOrigin(entry, origin)) {
         return false;
       }
       if (!normalizedSearchTerm) {
         return true;
       }
-      const haystack = [entry.message, entry.project_name, entry.component, entry.level, formatTimeOfDay(entry.timestamp)]
+      const haystack = [entry.message, entry.project_name, entry.component, entry.level, formatActivityTimestamp(entry.timestamp)]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return haystack.includes(normalizedSearchTerm);
     });
     return sortActivityEntries(filteredLogs);
-  }, [clearedAfterMs, logs?.entries, searchTerm]);
+  }, [hiddenIds, logs?.entries, searchTerm, origin]);
 
   useIsomorphicLayoutEffect(() => {
     if (!pinLogsToTop) {
@@ -111,7 +115,7 @@ export function ActivityPage() {
   }
 
   function handleClearLogs() {
-    setClearedAfterMs(Date.now());
+    setHiddenIds(new Set((logs?.entries ?? []).map(activityKey)));
   }
 
   function handleLogScroll() {
@@ -131,11 +135,27 @@ export function ActivityPage() {
     <div className="page-stack activity-page">
       <AppHeader title="Aktivitet" description="Siste hendelser, systemstatus og live aktivitet." />
 
+      <section className="surface surface--padded" aria-label="Aktivitetsopphav">
+        <label className="field field--inline">
+          Vis aktivitet
+          <select aria-label="Aktivitetsopphav" value={origin} onChange={(event) => setOrigin(event.target.value as ActivityOriginFilter)}>
+            <option value="operational">Drift</option>
+            <option value="test">Test</option>
+            <option value="unknown">Ukjent opphav</option>
+            <option value="all">Alle opphav</option>
+          </select>
+        </label>
+        <p>Drift, test og ukjent opphav vises separat. Eldre poster uten miljømetadata ligger under «Ukjent opphav».</p>
+        <span>
+          {(events?.events ?? []).filter((e) => e.origin === "operational").length} drift · {(events?.events ?? []).filter((e) => e.origin === "test").length}{" "}
+          test · {(events?.events ?? []).filter((e) => !e.origin || e.origin === "unknown").length} ukjent
+        </span>
+      </section>
       <section className="activity-grid" aria-label="Operasjonsstatus">
         <ActivityPanel
           title="Systemstatus"
           icon={<PulseIcon />}
-          note={updatedAt ? `Oppdatert ${formatDateTime(updatedAt)}` : "Laster status ..."}
+          note={updatedAt ? `Oppdatert ${formatActivityTimestamp(updatedAt)}` : "Laster status ..."}
           className="activity-panel--status"
         >
           {statusError && !status ? (
@@ -149,9 +169,22 @@ export function ActivityPage() {
                 <span className="activity-status__uptime">Oppetid {status.uptime}</span>
               </div>
               <dl className="activity-status__grid">
-                <StatusDefinition label="Prosjekt" value={status.project_name ?? "Alle prosjekter"} />
+                <StatusDefinition label="Prosjekt" value={status.project_name ?? (status.running ? "Prosjekt ikke rapportert" : "Ingen aktivt prosjekt")} />
                 <StatusDefinition label="Aktivitet" value={status.activity ?? "Ingen aktiv jobb"} />
                 <StatusDefinition label="Status" value={status.status ?? "Ingen aktiv jobb"} />
+                <StatusDefinition label="Jobb-ID" value={status.job_id ?? "Ingen aktiv jobb-ID"} />
+                {status.job_id && status.project_name ? (
+                  <Link
+                    to={
+                      status.job_type === "analysis"
+                        ? projectUrl(status.project_name, "review") + `?job=${encodeURIComponent(status.job_id)}`
+                        : projectUrl(status.project_name)
+                    }
+                  >
+                    Åpne aktivt prosjekt
+                    {status.job_type === "analysis" ? " og jobb" : ""}
+                  </Link>
+                ) : null}
                 <StatusDefinition label="Appliance" value={status.appliance_available ? "Tilgjengelig" : "Utilgjengelig"} />
               </dl>
               <div className="activity-status__meta">
@@ -159,7 +192,7 @@ export function ActivityPage() {
                 <span>Uptime {status.uptime}</span>
               </div>
               {status.job_type === "sync" || status.run_mode === "sync_only" || syncStatus?.job_type === "sync" ? (
-                <SyncProgressDetails status={status.job_type === "sync" || status.run_mode === "sync_only" ? status : syncStatus ?? status} />
+                <SyncProgressDetails status={status.job_type === "sync" || status.run_mode === "sync_only" ? status : (syncStatus ?? status)} />
               ) : null}
             </div>
           ) : (
@@ -180,7 +213,7 @@ export function ActivityPage() {
           ) : visibleEvents.length > 0 ? (
             <ol className="activity-feed">
               {visibleEvents.map((event) => (
-                <ActivityFeedRow key={`${event.timestamp}:${event.level}:${event.message}`} entry={event} />
+                <ActivityFeedRow key={activityKey(event)} entry={event} />
               ))}
             </ol>
           ) : (
@@ -191,7 +224,7 @@ export function ActivityPage() {
         <ActivityPanel
           title="Feilmeldinger"
           icon={<AlertIcon />}
-          note={visibleErrors.length > 0 ? `${visibleErrors.length.toLocaleString("nb-NO")} aktive feil` : "Ingen aktive feil"}
+          note={visibleErrors.length > 0 ? `${visibleErrors.length.toLocaleString("nb-NO")} historiske feil` : "Ingen registrerte feil"}
           className="activity-panel--errors"
         >
           {eventsError && visibleErrors.length === 0 ? (
@@ -201,24 +234,26 @@ export function ActivityPage() {
           ) : visibleErrors.length > 0 ? (
             <ol className="activity-error-list">
               {visibleErrors.map((error) => (
-                <ActivityErrorRow key={`${error.timestamp}:${error.message}`} entry={error} />
+                <ActivityErrorRow key={activityKey(error)} entry={error} />
               ))}
             </ol>
           ) : (
-            <EmptyState title="Ingen aktive feil" description="Ingen feilsignaler krever oppmerksomhet akkurat nå." />
+            <EmptyState title="Ingen registrerte feil" description="Ingen feil i den valgte historikken." />
           )}
         </ActivityPanel>
       </section>
 
-      <section className="surface surface--padded activity-log-panel" aria-label="Live logg">
+      <section className="surface surface--padded activity-log-panel" aria-label="Aktivitetslogg">
         <div className="section-head">
           <div>
-            <div className="section-kicker">Live</div>
-            <h2 className="section-title">Live logg</h2>
+            <div className="section-kicker">Historikk · poller hvert 4. sekund</div>
+            <h2 className="section-title">Aktivitetslogg</h2>
           </div>
           <div className="section-head__actions">
             <div className="section-head__note">
-              {logs?.entries.length ? `${visibleLogs.length.toLocaleString("nb-NO")} av ${logs.entries.length.toLocaleString("nb-NO")} linjer` : "Oppdateres hvert 4. sekund"}
+              {logs?.entries.length
+                ? `${visibleLogs.length.toLocaleString("nb-NO")} av ${logs.entries.length.toLocaleString("nb-NO")} linjer`
+                : "Oppdateres hvert 4. sekund"}
             </div>
             <label className="field field--inline activity-log-search">
               <span>Søk</span>
@@ -244,16 +279,14 @@ export function ActivityPage() {
           ) : visibleLogs.length > 0 ? (
             <div className="activity-log-list">
               {visibleLogs.map((entry) => (
-                <ActivityLogRow key={`${entry.timestamp}:${entry.level}:${entry.message}`} entry={entry} />
+                <ActivityLogRow key={activityKey(entry)} entry={entry} />
               ))}
             </div>
           ) : (
             <EmptyState
               title="Ingen logglinjer"
               description={
-                searchTerm.trim()
-                  ? "Søket fant ingen logglinjer i den nyligste tailen."
-                  : "Logglinjer vises her når Nexus og appliance produserer aktivitet."
+                searchTerm.trim() ? "Søket fant ingen logglinjer i den nyligste tailen." : "Logglinjer vises her når Nexus og appliance produserer aktivitet."
               }
             />
           )}
@@ -261,26 +294,6 @@ export function ActivityPage() {
       </section>
     </div>
   );
-}
-
-type TimestampedActivity = { timestamp: string };
-
-function sortActivityEntries<T extends TimestampedActivity>(entries: T[]): T[] {
-  return [...entries].sort((left, right) => {
-    const leftTimestamp = Date.parse(left.timestamp);
-    const rightTimestamp = Date.parse(right.timestamp);
-
-    if (Number.isFinite(leftTimestamp) && Number.isFinite(rightTimestamp)) {
-      return rightTimestamp - leftTimestamp;
-    }
-    if (Number.isFinite(rightTimestamp)) {
-      return 1;
-    }
-    if (Number.isFinite(leftTimestamp)) {
-      return -1;
-    }
-    return right.timestamp.localeCompare(left.timestamp);
-  });
 }
 
 function ActivityPanel({
@@ -333,6 +346,18 @@ function SyncProgressDetails({ status }: { status: ActivityStatusResponse | Sync
       </div>
       {strategy ? <div className="activity-sync-progress__strategy-copy">{syncStrategyDescription(strategy)}</div> : null}
       {status.sync_strategy_reason ? <div className="activity-sync-progress__reason">{status.sync_strategy_reason}</div> : null}
+      {"sync_status" in status ? (
+        <div>
+          Sync-fullføring: {syncStateLabel(status.sync_status)} · Enumerering:{" "}
+          {status.enumeration_complete === true ? "Fullført" : status.enumeration_complete === false ? "Ufullstendig" : "Ukjent"}
+        </div>
+      ) : null}
+      {"project_results" in status &&
+        status.project_results?.map((project, index) => (
+          <div key={index}>
+            {project.project_name ?? "Ukjent prosjekt"}: {syncStateLabel(project.sync_status)}
+          </div>
+        ))}
       {status.current_phase ? <div className="activity-sync-progress__phase">{status.current_phase}</div> : null}
       {status.current_project ? <div className="activity-sync-progress__project">Prosjekt: {status.current_project}</div> : null}
       {"files_downloaded" in status ? (
@@ -388,7 +413,7 @@ function syncStrategyDescription(strategy: string): string {
     return "Henter kun endringer siden forrige synkronisering.";
   }
   if (strategy === "full" || strategy === "fallback_full") {
-    return "Full gjennomgang av OneDrive pågår. Dette tar lengre tid enn en vanlig endringssynkronisering.";
+    return "Full gjennomgang av OneDrive. Dette tar lengre tid enn en vanlig endringssynkronisering.";
   }
   return "";
 }
@@ -417,22 +442,23 @@ function activityCategory(entry: Pick<ActivityEvent, "category" | "component" | 
 
 function activitySource(entry: Pick<ActivityEvent, "source" | "component">): string {
   const source = entry.source?.trim();
-  return source && source.toLowerCase() !== "history" ? source : entry.component ?? "System";
+  return source && source.toLowerCase() !== "history" ? source : (entry.component ?? "System");
 }
 
 function ActivityFeedRow({ entry }: { entry: ActivityEvent }) {
   return (
-    <li className="activity-feed__item">
+    <li className="activity-feed__item" data-event-id={entry.event_id ?? undefined}>
       <div className="activity-feed__meta">
-        <span className="activity-feed__time">{formatTimeOfDay(entry.timestamp)}</span>
+        <span className="activity-feed__time">{formatActivityTimestamp(entry.timestamp)}</span>
         <StatusPill status={entry.level} label={entry.level} tone={LEVEL_TONES[entry.level]} />
-        <span className="activity-feed__category">{activityCategory(entry)} · {activitySource(entry)}</span>
+        <span className="activity-feed__category">
+          {activityCategory(entry)} · {activitySource(entry)}
+        </span>
       </div>
       <div className="activity-feed__message">{entry.message}</div>
+      <ActivityEvidenceDetails entry={entry} />
       {entry.project_name || entry.component ? (
-        <div className="activity-feed__subline">
-          {[entry.project_name, entry.component].filter(Boolean).join(" · ")}
-        </div>
+        <div className="activity-feed__subline">{[entry.project_name, entry.component].filter(Boolean).join(" · ")}</div>
       ) : null}
     </li>
   );
@@ -440,13 +466,18 @@ function ActivityFeedRow({ entry }: { entry: ActivityEvent }) {
 
 function ActivityErrorRow({ entry }: { entry: ActivityError }) {
   return (
-    <li className="activity-error-list__item">
+    <li className="activity-error-list__item" data-event-id={entry.event_id ?? undefined}>
       <div className="activity-error-list__meta">
-        <span className="activity-error-list__time">{formatTimeOfDay(entry.timestamp)}</span>
-        {entry.project_name ? <span className="activity-error-list__project">{entry.project_name}</span> : <span className="activity-error-list__project">—</span>}
+        <span className="activity-error-list__time">{formatActivityTimestamp(entry.timestamp)}</span>
+        {entry.project_name ? (
+          <span className="activity-error-list__project">{entry.project_name}</span>
+        ) : (
+          <span className="activity-error-list__project">—</span>
+        )}
         <span className="activity-feed__category">Error · {activitySource(entry)}</span>
       </div>
       <div className="activity-error-list__message">{entry.message}</div>
+      <ActivityEvidenceDetails entry={entry} />
       {entry.component ? <div className="activity-error-list__component">{entry.component}</div> : null}
     </li>
   );
@@ -454,11 +485,14 @@ function ActivityErrorRow({ entry }: { entry: ActivityError }) {
 
 function ActivityLogRow({ entry }: { entry: ActivityLogEntry }) {
   return (
-    <div className={`activity-log-row activity-log-row--${entry.level.toLowerCase()}`}>
-      <span className="activity-log-row__time">{formatTimeOfDay(entry.timestamp)}</span>
+    <div className={`activity-log-row activity-log-row--${entry.level.toLowerCase()}`} data-event-id={entry.event_id ?? undefined}>
+      <span className="activity-log-row__time">{formatActivityTimestamp(entry.timestamp)}</span>
       <StatusPill status={entry.level} label={entry.level} tone={LEVEL_TONES[entry.level]} />
       <span className="activity-log-row__category">{activityCategory(entry)}</span>
-      <span className="activity-log-row__message">{entry.message}</span>
+      <span className="activity-log-row__message">
+        {entry.message}
+        <ActivityEvidenceDetails entry={entry} />
+      </span>
       {entry.project_name || entry.component || entry.source ? (
         <span className="activity-log-row__meta">{[activitySource(entry), entry.project_name, entry.component].filter(Boolean).join(" · ")}</span>
       ) : null}
@@ -469,10 +503,53 @@ function ActivityLogRow({ entry }: { entry: ActivityLogEntry }) {
 function buildLogExport(entries: ActivityLogEntry[]): string {
   return entries
     .map((entry) => {
-      const meta = [activityCategory(entry), activitySource(entry), entry.project_name, entry.component].filter(Boolean).join(" · ");
-      return [formatTimeOfDay(entry.timestamp), entry.level, meta ? `${entry.message} (${meta})` : entry.message].join(" ");
+      const meta = [
+        entry.event_id,
+        entry.job_id,
+        entry.environment ?? "ukjent miljø",
+        activityCategory(entry),
+        activitySource(entry),
+        entry.project_name,
+        entry.component,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return [formatActivityTimestamp(entry.timestamp), entry.level, meta ? `${entry.message} (${meta})` : entry.message].join(" ");
     })
     .join("\n");
+}
+
+export function syncStateLabel(state?: string): string {
+  return (
+    (
+      {
+        complete: "Fullført",
+        incomplete: "Ufullstendig",
+        failed: "Feilet",
+        unknown: "Ukjent",
+      } as Record<string, string>
+    )[state ?? "unknown"] ?? "Ukjent"
+  );
+}
+
+function ActivityEvidenceDetails({ entry }: { entry: ActivityEvent | ActivityError }) {
+  return (
+    <details className="activity-evidence">
+      <summary>{entry.origin === "operational" ? "Drift" : entry.origin === "test" ? "Test" : "Ukjent opphav"} · Vis hendelsesdetaljer</summary>
+      <div>ID: {entry.event_id ?? "Ukjent"}</div>
+      <div>
+        Miljø: {entry.environment ?? "Ukjent"} · Alvorlighet: {entry.severity ?? ("level" in entry ? entry.level : "ERROR")}
+      </div>
+      <div>
+        Jobb: {entry.job_id ?? "Ukjent"} · Kjøring: {entry.run_id ?? "Ukjent"}
+      </div>
+      <div>Sync-fullføring: {syncStateLabel(entry.sync_status)}</div>
+      {entry.job_type === "analysis" && entry.project_name && entry.job_id ? (
+        <Link to={projectUrl(entry.project_name, "review") + `?job=${encodeURIComponent(entry.job_id)}`}>Åpne prosjekt og jobb</Link>
+      ) : null}
+      <pre>{JSON.stringify(entry.raw ?? {}, null, 2)}</pre>
+    </details>
+  );
 }
 
 function PulseIcon(props: SVGProps<SVGSVGElement>) {

@@ -60,6 +60,7 @@ export interface MemoryJobs {
   worker_active: boolean;
 }
 export interface MemoryStatus {
+  coverage_unreadable?: Array<{ path: string; reason?: string; disposition?: string }>;
   job: MemoryJob;
   worker_active: boolean;
   cancellation_requested: boolean;

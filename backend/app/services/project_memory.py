@@ -373,6 +373,39 @@ class ProjectMemoryGateway:
             for path in self.settings.memory_runtime_root.glob("*.lock")
         )
 
+    def activity_snapshot(self):
+        """Read persisted identities/events; only a held worker lock means active work."""
+        records = self.service.discover_projects()
+        names = list(dict.fromkeys([d.name for d in self.definitions()] + [r.project_name for r in records]))
+        active, events = [], []
+        for name in names:
+            try:
+                binding = self.binding(name)
+                if not (binding.state / "memory.sqlite3").is_file():
+                    continue
+                with self.database(binding) as db:
+                    jobs = [dict(row) for row in db.execute(
+                        "SELECT * FROM jobs WHERE project=? ORDER BY created_at DESC,id DESC LIMIT 5", (binding.project_id,)
+                    )]
+                    for job in jobs:
+                        if job["status"] == "running" and self.active(binding) and job == jobs[0]:
+                            active.append(dict(job_id=job["id"], project_name=name, stage=job["stage"], updated_at=job["updated_at"]))
+                        for row in db.execute(
+                            "SELECT * FROM events WHERE project=? AND job=? ORDER BY sequence DESC LIMIT 100", (binding.project_id, job["id"])
+                        ):
+                            # Native event identity is the durable project/job/sequence tuple.
+                            raw = dict(row)
+                            events.append(dict(
+                                schema="appliance.memory.event/1", event_id=f"memory:{binding.project_id}:{row['job']}:{row['sequence']}",
+                                job_id=row["job"], project_name=name, timestamp=row["created_at"],
+                                run_mode="analysis", source="project_memory", phase=row["stage"],
+                                severity="error" if row["status"] == "failed" else "info",
+                                message=f"{row['stage']} · {row['status']}", native_event=raw,
+                            ))
+            except MemoryError:
+                continue
+        return active, events
+
     def status(self, name, job_id):
         binding = self.binding(name)
         row = self.require_job(binding, job_id)
@@ -380,6 +413,9 @@ class ProjectMemoryGateway:
         job.pop("report_path", None)
         latest = self.jobs(name)["jobs"][0]
         active = self.active(binding)
+        with self.database(binding) as db:
+            snapshot = db.execute("SELECT manifest FROM snapshots WHERE project=? AND id=?", (binding.project_id, row["snapshot"])).fetchone()
+        manifest = json.loads(snapshot["manifest"]) if snapshot else []
         return dict(
             job=job,
             worker_active=active,
@@ -389,6 +425,7 @@ class ProjectMemoryGateway:
             freshness=self.freshness(binding, row),
             can_resume=not active
             and row["status"] in {"failed", "cancelled", "running"},
+            coverage_unreadable=[item for item in manifest if item.get("version") is None],
         )
 
     def freshness(self, binding, job):

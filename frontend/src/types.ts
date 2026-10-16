@@ -26,6 +26,8 @@ export type ActivityState =
   | "Fullfører synkronisering"
   | "Synkronisering fullført"
   | "Synkronisering fullført uten endringer"
+  | "Synkronisering ufullstendig"
+  | "Sync-fullføring ukjent"
   | "Synkronisering feilet"
   | "Synkroniserer"
   | "Analyserer"
@@ -49,6 +51,7 @@ export interface SyncPerformance {
 }
 
 export interface ActivityStatusResponse {
+  running?: boolean;
   state: ActivityState;
   activity: string | null;
   status: string | null;
@@ -72,8 +75,23 @@ export interface ActivityStatusResponse {
   performance?: SyncPerformance | null;
 }
 
-export interface ActivityEvent {
-  timestamp: string;
+export interface ActivityEvidence {
+  event_id?: string | null;
+  source_event_id?: string | null;
+  run_id?: string | null;
+  environment?: string | null;
+  origin?: "operational" | "test" | "unknown";
+  provenance_basis?: string | null;
+  severity?: string | null;
+  transport?: string | null;
+  user_visible?: boolean | null;
+  technical_only?: boolean | null;
+  sync_status?: "complete" | "incomplete" | "failed" | "unknown";
+  raw?: Record<string, unknown>;
+}
+
+export interface ActivityEvent extends ActivityEvidence {
+  timestamp: string | null;
   level: ActivityLevel;
   project_name: string | null;
   component: string | null;
@@ -87,8 +105,8 @@ export interface ActivityEvent {
   job_id?: string | null;
 }
 
-export interface ActivityError {
-  timestamp: string;
+export interface ActivityError extends ActivityEvidence {
+  timestamp: string | null;
   project_name: string | null;
   component: string | null;
   message: string;
@@ -107,8 +125,8 @@ export interface ActivityEventsResponse {
   errors: ActivityError[];
 }
 
-export interface ActivityLogEntry {
-  timestamp: string;
+export interface ActivityLogEntry extends ActivityEvidence {
+  timestamp: string | null;
   level: ActivityLevel;
   project_name: string | null;
   component: string | null;
@@ -309,7 +327,21 @@ export interface ProjectReportsResponse {
   errors: string[];
 }
 
+export interface SyncCoverage {
+  project_name?: string | null;
+  sync_status?: "complete" | "incomplete" | "failed" | "unknown";
+  enumeration_complete?: boolean | null;
+  source_snapshot_status?: string | null;
+  source_snapshot_at?: string | null;
+  analysis_status?: string | null;
+  observed_at?: string | null;
+  analysis_exclusions?: Array<Record<string, unknown>>;
+  historical_analysis_exclusions?: Array<Record<string, unknown>>;
+  historical_coverage_diagnostics?: Array<{ message: string; observed_at?: string | null; run_id?: string | null }>;
+}
+
 export interface ProjectDetailResponse extends ProjectSummary {
+  sync_coverage?: SyncCoverage;
   analysis: ProjectAnalysisInfo | null;
   reports: ProjectReport[];
 }
@@ -382,6 +414,9 @@ export interface FolderCreateResponse {
 }
 
 export interface SyncRunResponse {
+  sync_status?: "complete" | "incomplete" | "failed" | "unknown";
+  enumeration_complete?: boolean | null;
+  project_results?: SyncCoverage[];
   job_id: string;
   running: boolean;
   started_at: string;
@@ -412,6 +447,9 @@ export interface SyncRunResponse {
 }
 
 export interface SyncStatusResponse {
+  sync_status?: "complete" | "incomplete" | "failed" | "unknown";
+  enumeration_complete?: boolean | null;
+  project_results?: SyncCoverage[];
   running: boolean;
   process_alive: boolean;
   lock_exists: boolean;

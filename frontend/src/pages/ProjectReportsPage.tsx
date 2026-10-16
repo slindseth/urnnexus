@@ -1,3 +1,4 @@
+import { ProjectCoverageDetails } from "../components/ProjectCoverageDetails";
 import { ErrorState } from "../components/ErrorState";
 import { ReportTable } from "../components/ReportTable";
 import { formatBytes, formatDateTime, getProjectReports } from "../lib/api";
@@ -6,7 +7,7 @@ import { useProjectPageContext } from "./ProjectPage";
 import { MemoryProjectPanel } from "../components/MemoryProjectPanel";
 
 export function ProjectReportsPage() {
-  const { project } = useProjectPageContext();
+  const { project, projectDetail } = useProjectPageContext();
   const { data: reports, loading, error, reload } = useResource(() => getProjectReports(project.projectName), [project.projectName]);
 
   if (loading) {
@@ -49,6 +50,7 @@ export function ProjectReportsPage() {
 
   return (
     <div className="section-stack">
+      <ProjectCoverageDetails coverage={projectDetail?.sync_coverage} />
       <MemoryProjectPanel key={project.projectName} projectName={project.projectName} variant="reports" />
       <section className="surface surface--padded">
         <div className="section-head">

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -22,6 +23,10 @@ class ApplianceSettings(BaseModel):
     appliance_root: Path = Field(default_factory=_default_appliance_root)
     sample_projects_dirname: str = "sample_projects"
     runtime_dirname: str = ".riveanbud_runtime"
+    activity_history_paths: list[Path] | None = Field(
+        default_factory=lambda: json.loads(os.environ["URN_NEXUS_ACTIVITY_HISTORY_PATHS"])
+        if os.getenv("URN_NEXUS_ACTIVITY_HISTORY_PATHS") else None
+    )
     onedrive_project_root_path: str = Field(
         default_factory=lambda: os.getenv(
             "URN_NEXUS_ONEDRIVE_PROJECT_ROOT", "AnbudAppliance/Urban_Reuse_Norway"

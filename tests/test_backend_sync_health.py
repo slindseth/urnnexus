@@ -12,7 +12,7 @@ def test_last_successful_sync_survives_restart_and_ignores_failed_jobs(tmp_path:
     journal = tmp_path / "cache" / "urn_nexus_activity.jsonl"
     journal.parent.mkdir()
     entries = [
-        {"timestamp": "2026-06-12T09:00:00+02:00", "event_code": event_code},
+        {"timestamp": "2026-06-12T09:00:00+02:00", "event_code": event_code, "sync_status": "complete"},
         {"timestamp": "2026-06-13T09:00:00+02:00", "event_code": "sync_failed"},
         {"timestamp": "2026-06-14T09:00:00+02:00", "event_code": "analysis_completed"},
     ]

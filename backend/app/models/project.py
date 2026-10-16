@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
 
@@ -64,6 +65,7 @@ class ProjectAnalysisInfo(ApiModel):
 
 
 class ProjectDetailResponse(ProjectSummary):
+    sync_coverage: dict[str, Any] = Field(default_factory=dict)
     analysis: ProjectAnalysisInfo | None = None
     reports: list[ProjectReport] = Field(default_factory=list)
 

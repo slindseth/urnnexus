@@ -1,3 +1,4 @@
+import { ProjectCoverageDetails } from "../components/ProjectCoverageDetails";
 import { ProjectIssuesPanel } from "../components/ProjectIssuesPanel";
 import { formatDateTime } from "../lib/api";
 import { useProjectPageContext } from "./ProjectPage";
@@ -8,10 +9,11 @@ function infoValue(value: string | null | undefined): string {
 }
 
 export function ProjectOverviewPage() {
-  const { project } = useProjectPageContext();
+  const { project, projectDetail } = useProjectPageContext();
 
   return (
     <div className="section-stack">
+      <ProjectCoverageDetails coverage={projectDetail?.sync_coverage} />
       <MemoryProjectPanel key={project.projectName} projectName={project.projectName} variant="summary" />
       <section className="surface surface--padded">
         <div className="section-head">

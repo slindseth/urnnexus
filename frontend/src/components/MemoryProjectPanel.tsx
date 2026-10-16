@@ -310,6 +310,10 @@ export function MemoryProjectPanel({
               Åpne funn og kilder
             </Link>
           ) : null}
+          {status?.coverage_unreadable?.length ? <div className="inline-note" role="note">
+            <strong>Uleselige filer i valgt snapshot</strong>
+            <ul>{status.coverage_unreadable.map(file => <li key={file.path}>{file.path} · {file.reason ?? file.disposition ?? "Kunne ikke leses"}</li>)}</ul>
+          </div> : null}
           {job ? (
             <MemoryReports
               key={`${projectName}:${job.job_id}:${data.revision}`}
@@ -414,6 +418,8 @@ function Coverage({ job }: { job: MemoryJob }) {
     ["Ventende seksjoner", job.batches_pending],
     ["Feilede seksjoner", job.batches_failed],
     ["Manuell kontroll", job.manual_review_units],
+    ["Ustøttede filer", job.unsupported_files],
+    ["Uleselige filer", job.unreadable_files],
   ];
   return (
     <>

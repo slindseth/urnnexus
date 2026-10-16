@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from typing import Any
 
 from pydantic import Field
 
@@ -22,6 +23,8 @@ ActivityState = Literal[
     "Synkronisering fullført",
     "Synkronisering fullført uten endringer",
     "Synkronisering feilet",
+    "Synkronisering ufullstendig",
+    "Sync-fullføring ukjent",
     "Synkroniserer",
     "Analyserer",
     "Genererer rapport",
@@ -32,6 +35,7 @@ ActivityLevel = Literal["INFO", "SUCCESS", "WARNING", "ERROR"]
 
 
 class ActivityStatusResponse(ApiModel):
+    running: bool = False
     state: ActivityState
     activity: str | None = None
     status: str | None = None
@@ -55,8 +59,23 @@ class ActivityStatusResponse(ApiModel):
     performance: SyncPerformance | None = None
 
 
-class ActivityEvent(ApiModel):
-    timestamp: datetime
+class ActivityEvidence(ApiModel):
+    event_id: str | None = None
+    source_event_id: str | None = None
+    run_id: str | None = None
+    environment: str | None = None
+    origin: Literal["operational", "test", "unknown"] = "unknown"
+    provenance_basis: str | None = None
+    severity: str | None = None
+    transport: str | None = None
+    user_visible: bool | None = None
+    technical_only: bool | None = None
+    sync_status: Literal["complete", "incomplete", "failed", "unknown"] = "unknown"
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActivityEvent(ActivityEvidence):
+    timestamp: datetime | None = None
     level: ActivityLevel
     project_name: str | None = None
     component: str | None = None
@@ -70,8 +89,8 @@ class ActivityEvent(ApiModel):
     job_id: str | None = None
 
 
-class ActivityError(ApiModel):
-    timestamp: datetime
+class ActivityError(ActivityEvidence):
+    timestamp: datetime | None = None
     project_name: str | None = None
     component: str | None = None
     message: str
@@ -90,8 +109,8 @@ class ActivityEventsResponse(ApiModel):
     errors: list[ActivityError] = Field(default_factory=list)
 
 
-class ActivityLogEntry(ApiModel):
-    timestamp: datetime
+class ActivityLogEntry(ActivityEvidence):
+    timestamp: datetime | None = None
     level: ActivityLevel
     project_name: str | None = None
     component: str | None = None

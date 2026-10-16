@@ -76,3 +76,64 @@ Skriptet krever Playwright/Chromium som separat utviklingsverktøy; ingen produk
 ## Utestet og kontraktsgrenser
 
 Produksjonsstart med OpenAI, gjenopptak under et levende API-kall, faktisk ekstern autentisering, rapportopplasting og SMTP-levering er ikke testet. Det er ingen støttet handling for å løse manuelle parserenheter eller read-only fjerninventar; se [integrasjonsdokumentasjonen](project-memory-integration.md#presise-begrensninger). Bruk eksisterende appliance-driftsrutiner for disse forholdene. Nexus lager ingen erstatningstilstand eller egne faglige funn.
+
+## Aktivitetsrapportering — kontroll 15. oktober 2026 (America/New_York)
+
+Nexus-arbeidet startet med oppdatert appliance-kontrakt og utfallet av pagination-rettingen. Appliance ble inspisert skrivebeskyttet. Følgende feil ble bekreftet i gjeldende Nexus-kode før retting:
+
+- `_activity_candidates_from_history_payload` la til **Running OCR** ved generisk fullføring/rapporttelling, og utledet rapport-, opplastings- og e-posthendelser. Dette var fremdeles aktiv kode.
+- `_monitor_sync_process` og refresh-ruten satte fullført fra returkode 0. Null `files_changed` ble til **Sync completed with no changes**, uten sync-/enumereringsbevis.
+- Manglende historikktid ble erstattet med `datetime.now()`. Feeden viste bare klokkeslett. Deduplisering brukte tid/alvorlighet/prosjekt/komponent/melding, ikke hendelsesidentitet.
+- Kilde og alvorlighet ble omformet; miljø, event-ID og kjørings-ID ble ikke bevart. Aktivitetslesingen gjenbrukte en bred rekursiv rapporthistorikkskanning.
+- Gjeldende prosjekt kunne velges fra arkivet, og prosjektminnets varige aktive jobb ble ikke brukt i aktivitetsstatus.
+- Browseren viste at frontend-avhengigheten også måtte rettes: eksplisitt `unknown` blokkerte oppstart, og daglig-sync godtok timestamp eller delstreng `complete` som suksess, inkludert `incomplete`.
+
+Disse rapporteringsbanene er rettet. Kildenes gamle feilpåstander er bevart i rådetaljer og merket som historiske påstander med ukjent fullføring. Stale appliance-låser ignoreres nå uten å bli slettet ved GET. Prosjektminnets eksisterende start/resume/cancel-, kilde-, funn- og rapportintegrasjon er bevart.
+
+| Kontroll | Resultat |
+| --- | --- |
+| `pytest tests/test_activity_reporting.py tests/test_project_memory.py tests/test_backend_sync_health.py -q` | **38 bestått** |
+| Siste komplette `pytest -q` | **89 bestått, 2 eksisterende feil**; 13,66 s |
+| `npm test -- --reporter=dot` | **116 bestått i 30 filer** |
+| `npm run build` | TypeScript og Vite bestått |
+| Ruff `--select F` på backend, ny verifikasjonsserver og nye/utvidede tester | Bestått |
+| `git diff --check` | Bestått |
+
+De to komplette-suitefeilene er de samme faste live-dataforventningene beskrevet over: 6 mot 7 prosjekter og Bryn Skole rapport 6.0 mot faktisk 11.0. Begge ble reprodusert ved å pakke ut uendret **0d6d183** i en separat nabomappe og kjøre de to testene der. Produksjonsdata og disse forventningene er ikke endret. Eksisterende Starlette/httpx- og React act/router/SSR-advarsler gjenstår.
+
+De målrettede regresjonene beviser blant annet null-exit med ufullstendig resultat, motsigende aggregate/prosjektbevis, komplett uendret sync, sletting uten nedlasting, separat analysefeil, ingen oppdiktet OCR fra fullført historie, ekte nestet prosesseringshendelse med egen tid, undatert/naiv tid, stabile ID-er etter ny tail/refresh, deduplisert kilde-ID, separate identiske varsler, testtransport, prosjekt med «Testprosjekt»-navn i drift, ukjent opphav, avgrenset historikkilde, SMC/policydekning og uleselig manifest, tilgjengelig delrapport samt aktiv prosjektjobb med samme varige ID på tvers av app-instans og arbeiderlås.
+
+### Browser → API → historikk/prosjektminne → visning
+
+Chromium ble brukt på **1440 × 1050** og **390 × 844**. Lokale testporter var **8003/5176**. Automatisk sync var slått av i Vite; verifikasjonsserveren avviste alle muterende HTTP-metoder. Eksisterende produksjonstjenester ble ikke omstartet.
+
+- Ekte operativ synkhistorikk: Graph-paginationvarsler er synlige i **Drift**, med opprinnelig dato, UTC, forekomst-ID og utvidbar dokumentasjon. Neste poll beholder nøyaktig samme innleste ID-liste. Ingen OCR eller prosjektjobb ble startet av arkivet. Eldre fullføring er ukjent, ikke ettergodkjent av den senere appliance-rettingen.
+- Ekte Citypassasjen: **AG47-49 Sammenstilt.smc** finnes fortsatt i historiske dekningdetaljer på rapportsiden. Parser-/filbegrensninger og synkronisering vises separat.
+- Isolert representativ historikk: ufullstendig sync med null nedlastinger forblir ufullstendig; komplett uendret prosjekt får riktig fullføring. To like Graph-varsler med ulike ID-er kan begge åpnes. Testfeilen vises bare i **Test**; ukjente/udaterte poster ligger i **Ukjent opphav** og merkes **Udatert**.
+- Den midlertidige fixture-jobben hadde en eksplisitt simulert `running`-rad og holdt arbeiderlås. Riktig prosjekt og faktisk varig jobb-ID ble vist og beholdt etter reload. Lenken åpnet samme ID i gjennomgangen. Native SMC-enhet var synlig i manuell dekning; lagret Word-rapport var fortsatt tilgjengelig med HTTP 200.
+- Skjermbildene ble åpnet og inspisert. Ingen horisontal dokument-scroll ved 390 px. **0 JavaScript-sidefeil, 0 muterende browserforespørsler**.
+
+Den representative jobben opprettes med den ekte appliance-CLI-en i **fixture**-modus, deaktivert embedding og tom OpenAI-nøkkel, kun i en ny `/tmp/nexus-activity-browser-*`-mappe. Miljømarkøren `production` i de syntetiske historikkpostene er bevisst kontraktsdata for å teste Drift-valget, ikke reell driftsproveniens. Dette er ingen ny semantisk kvalitetsvurdering. Ingen OpenAI-analyse, e-post, kildeopplasting eller sletting av driftslogger ble initiert.
+
+Maskinresultat og skjermbilder ligger i ignorerte `browser-artifacts/activity/`: `result.json`, `operational-desktop.png`, `operational-narrow.png`, `historical-smc-coverage.png`, `representative-operational.png`, `representative-test.png` og `representative-job-coverage.png`. `appliance-integrity.json` dokumenterer SHA256-kontroll av **204** appliance-kode-/dokumentasjonsfiler og eksisterende historikk-/loggfiler: **ingen endring**. En separat sluttkontroll av operative databaser, synk-state, historikk og logger er registrert i `operational-integrity.json`.
+
+Gjenta lokalt (Playwright må allerede være tilgjengelig):
+
+```bash
+# Terminal 1, fra Nexus-roten. Kun midlertidig fixture skrives.
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m uvicorn \
+  scripts.serve_activity_verification:create_verification_app --factory \
+  --host 127.0.0.1 --port 8003
+
+# Terminal 2
+cd frontend
+VITE_NEXUS_AUTO_SYNC=false VITE_BACKEND_URL=http://127.0.0.1:8003 \
+  npm run dev:vite -- --host 127.0.0.1 --port 5176
+
+# Terminal 3, fra Nexus-roten
+NODE_PATH=/path/to/node_modules \
+  NEXUS_VERIFY_REPRESENTATIVE_API=http://127.0.0.1:8003/representative \
+  node scripts/verify_activity_browser.cjs
+```
+
+Manglende produsentmetadata gjenstår som synlige begrensninger: eldre syncposter mangler eksplisitt fullføring, enkelte eldre hendelser mangler ID eller tids-/miljødata, og native minnehendelser mangler miljø/transport. Fullføring og driftsopphav kan derfor ikke etterkonstrueres. Midlertidige stier uten eksplisitt pytest-proveniens klassifiseres som ukjente. Ingen manuell parserenhet kan markeres løst gjennom den gjeldende appliance-kontrakten; Nexus tilbyr fortsatt bare lesing og kildeåpning.

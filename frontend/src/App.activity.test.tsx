@@ -51,6 +51,7 @@ function makeActivityData() {
       updated_at: "2026-06-30T08:12:10+02:00",
       events: [
         {
+          origin: "operational",
           timestamp: "2026-06-30T08:11:30+02:00",
           level: "SUCCESS",
           project_name: "Bryn Skole",
@@ -58,6 +59,7 @@ function makeActivityData() {
           message: "Generated report",
         },
         {
+          origin: "operational",
           timestamp: "2026-06-30T08:10:10+02:00",
           level: "INFO",
           project_name: "Bryn Skole",
@@ -67,6 +69,7 @@ function makeActivityData() {
       ],
       errors: [
         {
+          origin: "operational",
           timestamp: "2026-06-30T08:09:02+02:00",
           project_name: "Bryn Skole",
           component: "OpenAI",
@@ -80,6 +83,7 @@ function makeActivityData() {
       updated_at: "2026-06-30T08:12:10+02:00",
       entries: [
         {
+          origin: "operational",
           timestamp: "2026-06-30T08:12:00+02:00",
           level: "INFO",
           project_name: "Bryn Skole",
@@ -87,6 +91,7 @@ function makeActivityData() {
           message: "Starting OneDrive sync",
         },
         {
+          origin: "operational",
           timestamp: "2026-06-30T08:12:05+02:00",
           level: "SUCCESS",
           project_name: "Bryn Skole",
@@ -116,7 +121,7 @@ describe("Activity route", () => {
     expect(markup).toContain("Aktivitet");
     expect(markup).toContain("Siste hendelser");
     expect(markup).toContain("Feilmeldinger");
-    expect(markup).toContain("Live logg");
+    expect(markup).toContain("Aktivitetslogg");
     expect(markup).toContain("Bryn Skole");
     expect(markup).toContain("Generated report");
     expect(markup).toContain("Request timed out");
@@ -141,7 +146,7 @@ describe("Activity route", () => {
       </StaticRouter>,
     );
 
-    expect(markup).toContain("Ingen aktive feil");
+    expect(markup).toContain("Ingen registrerte feil");
     expect(markup).toContain("Ingen hendelser ennå");
     expect(markup).toContain("Ingen logglinjer");
   });

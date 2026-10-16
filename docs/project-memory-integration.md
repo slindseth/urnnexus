@@ -111,3 +111,29 @@ npm run build
 CLI-kontraktstestene bruker ekte appliance CLI med `fixture`, deaktivert embedding og ingen OpenAI-nøkkel. Alle mutasjoner skjer i midlertidige Nexus-testprosjekter. `NEXUS_TEST_MEMORY_CLI_ROOT` kan overstyre appliance-stien; disse integrasjonstestene hoppes over hvis CLI ikke er installert. Samlede funn/evidens i transporttesten er uttrykkelige syntetiske kontraktsdata, ikke et nytt semantisk kvalitetsmål.
 
 Se [verifikasjonsresultat](project-memory-verification.md) for faktisk kjørte kontroller og avgrensninger.
+
+## Aktivitet, sync-fullføring og kildedekning
+
+Aktivitetsadapteren følger [appliance-kontrakten](../../appliance/docs/project-memory-nexus-contract.md), avsnittet «Sync-fullføring og hendelsesproveniens». Pagination-rettingen og dens avgrensede Graph-kontroll er beskrevet i [appliance-verifikasjonen](../../appliance/docs/project-memory-verification.md). Nexus endrer ikke appliance-kode eller prosjektminnets analyse-/rapportflyt.
+
+`/api/sync/status` og startsvaret har additive `sync_status`, `enumeration_complete` og `project_results`. Monitoren bruker eksplisitt aggregate- og prosjektresultat. Et ufullstendig prosjekt/enumerering overstyrer påstått suksess. Manglende fullføringsbevis gir `unknown`; returkode 0, null nedlastinger, `phase=completed`, gammel rapport og `skipped_no_changes` er utilstrekkelig. Analyse-/leveringsfeil endrer ikke en eksplisitt komplett sync til mislykket filsynk. «Completed with no changes» krever komplett sync og kjente null endringer; sletting/omdøping teller også. Bare dokumentert komplett kildesnapshot kan oppdatere helsens `last_synced_at`.
+
+Aktivitetssvarene beholder `event_id`, `source_event_id`, `run_id`, `job_id`, kilde, alvorlighet, miljø, transport, synlighet og rå historikk i `raw`. `timestamp` er nullable. Dato og eksplisitt UTC vises; opprinnelig tidsstempel ligger også i råposten. Manglende/ugyldig dato eller tidssone blir **Udatert**, aldri dagens klokkeslett. Identitetsløse JSONL-poster får en deterministisk ID fra filplassering og byteposisjon; separate identiske forekomster bevares. Polling erstatter visningen med et nytt snapshot. Loggvisningens «Tøm visning» skjuler bare innleste ID-er i nettleserminnet.
+
+`event_records`, `source_ingestion_events` og `processing_records` leses som eksplisitte hendelser med egne tider. Generiske historikksammendrag lager ingen OCR-, rapport-, opplastings- eller e-posthendelser. Eldre fullføringspåstander uten syncbevis merkes som historiske påstander med ukjent fullføring; originalmeldingen beholdes i `raw`. En historisk feil er ikke merket «aktiv feil».
+
+`/api/activity/status` har `running` og bruker levende prosess-/arbeiderlås. Prosjektminnets aktive jobb må også være den nyeste lagrede `running`-jobben for samme prosjekt; faktisk jobb-ID og prosjekt-ID leses fra den eksisterende skrivebeskyttede databasen. URL til gjennomgang bruker samme jobb-ID. Arbeiderlås uten ny jobbidentitet gir ingen oppdiktet ID. Hendelser fra inntil fem nyeste jobber per prosjekt leses fra native eventrader (inntil 100 per jobb), med stabil prosjekt/jobb/sekvens-identitet. Ingen analyse eller migrering startes. Legacy synklåser kontrolleres, men slettes ikke ved statuslesing; appliance eier oppryddingen.
+
+Drift, test og ukjent opphav har egne valg. `environment=test`, `transport=test_transport` eller en eksplisitt pytest-kildesti dokumenterer testopphav. `environment=production` dokumenterer drift. Prosjektnavn og meldingsordlyd bestemmer aldri opphav. Native minnehendelser og eldre poster uten miljø beholdes som ukjente; dagens servermiljø brukes ikke til å ettermerke dem. Grensene 40 hendelser, 10 feil og 160 logglinjer gjelder per opphav, slik at tester ikke fortrenger driftsvarsler fra det innleste vinduet. JSONL-lesing er avgrenset til 120 siste poster per konfigurert fil.
+
+Standard aktivitet leser kun `outputs/<konfigurert selskapsrot>/history.jsonl`, Nexus-journalen og synkhistorikker under konfigurerte runtime-røtter; den skanner ikke alle `outputs`-mapper etter testhistorikk. Drift kan sette en eksplisitt JSON-liste over tillatte historikkfiler:
+
+```bash
+export URN_NEXUS_ACTIVITY_HISTORY_PATHS='["/absolute/operational/onedrive_sync_history.jsonl"]'
+```
+
+Tom liste `[]` slår av appliance-historikk i aktivitetsfeeden, men ikke den separate Nexus-journalen eller prosjektminnets native hendelser. `URN_NEXUS_ENVIRONMENT=production|test|development` kan angi miljø for **nye Nexus-journalposter**; uten innstilling er miljø ukjent. Eksisterende filer ettermerkes ikke.
+
+Prosjektdetaljer har `sync_coverage`: eksplisitt sync-/enumereringsstatus, siste dokumenterte kildesnapshot, separat analysestatus, policyutelatelser og historiske parser-/filbegrensninger. Denne projeksjonen leser hele det konfigurerte arkivet med filsignaturbuffer, også når en SMC-begrensning er eldre enn aktivitetstailen. Prosjekttilknytningen er eksakt. Begrensninger med samme melding kan grupperes med antall, første/siste tid og utvidbare forekomster. Arkivbegrensninger er observasjoner, ikke bevis på at samme fil fremdeles finnes. Native manuelle enheter og uleselige snapshot-manifestposter vises i valgt prosjektjobb. Delvise Word-rapporter og kildeåpning beholdes. Ingen «løst»-handling er lagt til.
+
+Manglende produsentmetadata kan ikke rekonstrueres: eldre syncinnslag mangler ofte fullføringsfelt og event-ID; native minnehendelser mangler miljø/transport. Opprinnelige Graph-responser finnes ikke for hver gammel advarsel. En ukjent historisk sync er derfor ikke etterkonvertert til komplett eller feil. Ved flere samtidige prosjektarbeidere viser statuskortet én aktiv prosjektjobb; hendelsesdetaljene beholder hver jobbs identitet.
